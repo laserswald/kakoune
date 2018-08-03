@@ -5,6 +5,7 @@
 #include "coord.hh"
 #include "constexpr_utils.hh"
 #include "enum.hh"
+#include "optional.hh"
 #include "safe_ptr.hh"
 #include "scope.hh"
 #include "shared_string.hh"
@@ -102,7 +103,7 @@ using BufferLines = Vector<StringDataPtr, MemoryDomain::BufferContent>;
 // The Buffer class permits to read and mutate this file
 // representation. It also manage modifications undo/redo and
 // provides tools to deal with the line/column nature of text.
-class Buffer : public SafeCountable, public OptionManagerWatcher, public Scope
+class Buffer final : public SafeCountable, public Scope, private OptionManagerWatcher
 {
 public:
     enum class Flags
@@ -117,6 +118,8 @@ public:
         ReadOnly = 1 << 6,
     };
     friend constexpr bool with_bit_ops(Meta::Type<Flags>) { return true; }
+
+    enum class HistoryId : size_t { First = 0, Invalid = (size_t)-1 };
 
     Buffer(String name, Flags flags, StringView data = {},
            timespec fs_timestamp = InvalidTime);
@@ -139,11 +142,11 @@ public:
     void           set_fs_timestamp(timespec ts);
 
     void           commit_undo_group();
-    bool           undo(size_t count = 1) noexcept;
-    bool           redo(size_t count = 1) noexcept;
-    bool           move_to(size_t history_id) noexcept;
-    size_t         current_history_id() const noexcept;
-    size_t         next_history_id() const noexcept { return m_next_history_id; }
+    bool           undo(size_t count = 1);
+    bool           redo(size_t count = 1);
+    bool           move_to(HistoryId id);
+    HistoryId      current_history_id() const noexcept { return m_history_id; }
+    HistoryId      next_history_id() const noexcept { return (HistoryId)m_history.size(); }
 
     String         string(BufferCoord begin, BufferCoord end) const;
     StringView     substr(BufferCoord begin, BufferCoord end) const;
@@ -163,11 +166,11 @@ public:
     bool           is_valid(BufferCoord c) const;
     bool           is_end(BufferCoord c) const;
 
-    BufferCoord    last_modification_coord() const;
-
     BufferIterator begin() const;
     BufferIterator end() const;
     LineCount      line_count() const;
+
+    Optional<BufferCoord> last_modification_coord() const;
 
     StringView operator[](LineCount line) const
     { return m_lines[line]; }
@@ -218,6 +221,7 @@ public:
     void on_registered();
     void on_unregistered();
 
+    void throw_if_read_only() const;
 private:
     void on_option_changed(const Option& option) override;
 
@@ -254,27 +258,25 @@ private:
 
     using UndoGroup = Vector<Modification, MemoryDomain::BufferMeta>;
 
-   struct HistoryNode : SafeCountable, UseMemoryDomain<MemoryDomain::BufferMeta>
+    struct HistoryNode : UseMemoryDomain<MemoryDomain::BufferMeta>
     {
-        HistoryNode(size_t id, HistoryNode* parent);
+        HistoryNode(HistoryId parent);
 
-        UndoGroup undo_group;
-        Vector<std::unique_ptr<HistoryNode>, MemoryDomain::BufferMeta> childs;
-        SafePtr<HistoryNode> parent;
-        HistoryNode* redo_child = nullptr; // not a SafePtr to avoid lifetime issues between this and childs
-        size_t id;
+        HistoryId parent;
+        HistoryId redo_child = HistoryId::Invalid;
         TimePoint timepoint;
+        UndoGroup undo_group;
     };
 
-    size_t                m_next_history_id = 0;
-    HistoryNode           m_history;
-    SafePtr<HistoryNode>  m_history_cursor;
-    SafePtr<HistoryNode>  m_last_save_history_cursor;
-    UndoGroup             m_current_undo_group;
+    Vector<HistoryNode> m_history;
+    HistoryId           m_history_id = HistoryId::Invalid;
+    HistoryId           m_last_save_history_id = HistoryId::Invalid;
+    UndoGroup           m_current_undo_group;
 
-    void move_to(HistoryNode* history_node) noexcept;
-
-    template<typename Func> HistoryNode* find_history_node(HistoryNode* node, const Func& func);
+          HistoryNode& history_node(HistoryId id)       { return m_history[(size_t)id]; }
+    const HistoryNode& history_node(HistoryId id) const { return m_history[(size_t)id]; }
+          HistoryNode& current_history_node()           { return m_history[(size_t)m_history_id]; }
+    const HistoryNode& current_history_node()     const { return m_history[(size_t)m_history_id]; }
 
     Vector<Change, MemoryDomain::BufferMeta> m_changes;
 

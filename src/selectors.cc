@@ -4,6 +4,7 @@
 #include "context.hh"
 #include "flags.hh"
 #include "optional.hh"
+#include "option_types.hh"
 #include "regex.hh"
 #include "string.hh"
 #include "unicode.hh"
@@ -173,17 +174,13 @@ Optional<Selection>
 select_line(const Context& context, const Selection& selection)
 {
     auto& buffer = context.buffer();
-    Utf8Iterator first{buffer.iterator_at(selection.cursor()), buffer};
-    if (*first == '\n' and first + 1 != buffer.end())
-        ++first;
-
-    while (first != buffer.begin() and *(first - 1) != '\n')
-        --first;
-
-    Utf8Iterator last = first;
-    while (last + 1 != buffer.end() and *last != '\n')
-        ++last;
-    return target_eol(utf8_range(first, last));
+    auto line = selection.cursor().line;
+    // Next line if line fully selected
+    if (selection.anchor() <= BufferCoord{line, 0_byte} and
+        selection.cursor() == BufferCoord{line, buffer[line].length() - 1} and
+        line != buffer.line_count() - 1)
+        ++line;
+    return target_eol({{line, 0_byte}, {line, buffer[line].length() - 1}});
 }
 
 template<bool only_move>
@@ -230,9 +227,9 @@ select_matching(const Context& context, const Selection& selection)
     auto& matching_pairs = context.options()["matching_pairs"].get<Vector<Codepoint, MemoryDomain::Options>>();
     Utf8Iterator it{buffer.iterator_at(selection.cursor()), buffer};
     auto match = matching_pairs.end();
-    while (not is_eol(*it))
+    while (it != buffer.end())
     {
-        match = std::find(matching_pairs.begin(), matching_pairs.end(), *it);
+        match = find(matching_pairs, *it);
         if (match != matching_pairs.end())
             break;
         ++it;
@@ -275,22 +272,24 @@ select_matching(const Context& context, const Selection& selection)
     return {};
 }
 
-template<typename Iterator>
+template<typename Iterator, typename Container>
 Optional<std::pair<Iterator, Iterator>>
-find_opening(const Iterator& begin, Iterator pos,
+find_opening(Iterator pos, const Container& container,
              const Regex& opening, const Regex& closing,
              int level, bool nestable)
 {
     MatchResults<Iterator> res;
-    if (backward_regex_search(begin, pos, res, closing) and
+    if (backward_regex_search(container.begin(), pos,
+                              container.begin(), container.end(), res, closing) and
         res[0].second == pos)
         pos = res[0].first;
 
-    for (auto match : RegexIterator<Iterator, MatchDirection::Backward>{begin, pos, opening})
+    using RegexIt = RegexIterator<Iterator, MatchDirection::Backward>;
+    for (auto match : RegexIt{container.begin(), pos, container.begin(), container.end(), opening})
     {
         if (nestable)
         {
-            for (auto m : RegexIterator<Iterator, MatchDirection::Backward>{match[0].second, pos, closing})
+            for (auto m [[gnu::unused]] : RegexIt{match[0].second, pos, container.begin(), container.end(), closing})
                 ++level;
         }
 
@@ -302,22 +301,23 @@ find_opening(const Iterator& begin, Iterator pos,
     return {};
 }
 
-template<typename Iterator>
+template<typename Iterator, typename Container>
 Optional<std::pair<Iterator, Iterator>>
-find_closing(Iterator pos, const Iterator& end,
+find_closing(Iterator pos, const Container& container,
              const Regex& opening, const Regex& closing,
              int level, bool nestable)
 {
     MatchResults<Iterator> res;
-    if (regex_search(pos, end, res, opening) and
-        res[0].first == pos)
+    if (regex_search(pos, container.end(), container.begin(), container.end(),
+                     res, opening) and res[0].first == pos)
         pos = res[0].second;
 
-    for (auto match : RegexIterator<Iterator, MatchDirection::Forward>{pos, end, closing})
+    using RegexIt = RegexIterator<Iterator, MatchDirection::Forward>;
+    for (auto match : RegexIt{pos, container.end(), container.begin(), container.end(), closing})
     {
         if (nestable)
         {
-            for (auto m : RegexIterator<Iterator, MatchDirection::Forward>{pos, match[0].first, opening})
+            for (auto m [[gnu::unused]] : RegexIt{pos, match[0].first, container.begin(), container.end(), opening})
                 ++level;
         }
 
@@ -339,36 +339,45 @@ find_surrounding(const Container& container, Iterator pos,
 
     // When onto the token of a non nestable block, consider it as an opening.
     MatchResults<Iterator> matches;
-    if (not nestable and regex_search(pos, container.end(), matches, opening) and
+    if (not nestable and regex_search(pos, container.end(), container.begin(),
+                                      container.end(), matches, opening) and
         matches[0].first == pos)
         pos = matches[0].second;
 
     auto first = pos;
+    auto last = pos;
     if (flags & ObjectFlags::ToBegin)
     {
         // When positionned onto opening and searching to opening, search the parent one
         if (nestable and first != container.begin() and not (flags & ObjectFlags::ToEnd) and
-            regex_search(first, container.end(), matches, opening) and matches[0].first == first)
+            regex_search(first, container.end(), container.begin(), container.end(),
+                         matches, opening) and matches[0].first == first)
             first = utf8::previous(first, container.begin());
 
-        if (auto res = find_opening(container.begin(), first+1, opening, closing, level, nestable))
-            first = (flags & ObjectFlags::Inner) ? res->second : res->first; 
+        if (auto res = find_opening(first+1, container, opening, closing, level, nestable))
+        {
+            first = (flags & ObjectFlags::Inner) ? res->second : res->first;
+            if (flags & ObjectFlags::ToEnd) // ensure we find the matching end
+            {
+                last = res->second;
+                level = 0;
+            }
+        }
         else
             return {};
     }
-
-    auto last = pos;
     if (flags & ObjectFlags::ToEnd)
     {
         // When positionned onto closing and searching to closing, search the parent one
         auto next = utf8::next(last, container.end());
         if (nestable and next != container.end() and not (flags & ObjectFlags::ToBegin) and
-            backward_regex_search(container.begin(), next, matches, closing) and matches[0].second == next)
+            backward_regex_search(container.begin(), next, container.begin(), container.end(),
+                                  matches, closing) and matches[0].second == next)
             last = next;
 
-        if (auto res = find_closing(last, container.end(), opening, closing, level, nestable))
+        if (auto res = find_closing(last, container, opening, closing, level, nestable))
             last = (flags & ObjectFlags::Inner) ? utf8::previous(res->first, container.begin())
-                                                : utf8::previous(res->second, container.begin()); 
+                                                : utf8::previous(res->second, container.begin());
         else
             return {};
     }
@@ -485,7 +494,7 @@ select_sentence(const Context& context, const Selection& selection,
     auto& buffer = context.buffer();
     BufferIterator first = buffer.iterator_at(selection.cursor());
 
-    if (not (flags & ObjectFlags::ToEnd))
+    if (not (flags & ObjectFlags::ToEnd) and first != buffer.begin())
     {
         BufferIterator prev_non_blank = first-1;
         skip_while_reverse(prev_non_blank, buffer.begin(),
@@ -652,6 +661,17 @@ select_indent(const Context& context, const Selection& selection,
         return indent;
     };
 
+    auto get_current_indent = [&](const Buffer& buffer, LineCount line, int tabstop)
+    {
+        for (auto l = line; l >= 0; --l)
+            if (buffer[l] != "\n"_sv)
+                return get_indent(buffer[l], tabstop);
+        for (auto l = line+1; l < buffer.line_count(); ++l)
+            if (buffer[l] != "\n"_sv)
+                return get_indent(buffer[l], tabstop);
+        return 0_char;
+    };
+
     auto is_only_whitespaces = [](StringView str) {
         auto it = str.begin();
         skip_while(it, str.end(),
@@ -665,13 +685,13 @@ select_indent(const Context& context, const Selection& selection,
     auto& buffer = context.buffer();
     int tabstop = context.options()["tabstop"].get<int>();
     auto pos = selection.cursor();
-    LineCount line = pos.line;
-    auto indent = get_indent(buffer[line], tabstop);
+    const LineCount line = pos.line;
+    const auto indent = get_current_indent(buffer, line, tabstop);
 
     LineCount begin_line = line - 1;
     if (to_begin)
     {
-        while (begin_line >= 0 and (buffer[begin_line] == StringView{"\n"} or
+        while (begin_line >= 0 and (buffer[begin_line] == "\n"_sv or
                                     get_indent(buffer[begin_line], tabstop) >= indent))
             --begin_line;
     }
@@ -680,7 +700,7 @@ select_indent(const Context& context, const Selection& selection,
     if (to_end)
     {
         const LineCount end = buffer.line_count();
-        while (end_line < end and (buffer[end_line] == StringView{"\n"} or
+        while (end_line < end and (buffer[end_line] == "\n"_sv or
                                    get_indent(buffer[end_line], tabstop) >= indent))
             ++end_line;
     }
@@ -839,12 +859,10 @@ void select_buffer(SelectionList& selections)
 }
 
 static RegexExecFlags
-match_flags(const Buffer& buf, const BufferIterator& begin, const BufferIterator& end,
-            bool bos, bool eos)
+match_flags(const Buffer& buf, const BufferIterator& begin, const BufferIterator& end)
 {
     return match_flags(is_bol(begin.coord()), is_eol(buf, end.coord()),
-                       is_bow(buf, begin.coord()), is_eow(buf, end.coord()),
-                       bos, eos);
+                       is_bow(buf, begin.coord()), is_eow(buf, end.coord()));
 }
 
 static bool find_next(const Buffer& buffer, const BufferIterator& pos,
@@ -852,12 +870,12 @@ static bool find_next(const Buffer& buffer, const BufferIterator& pos,
                       const Regex& ex, bool& wrapped)
 {
     if (pos != buffer.end() and
-        regex_search(pos, buffer.end(), matches, ex,
-                     match_flags(buffer, pos, buffer.end(), pos.coord() == BufferCoord{0,0}, true)))
+        regex_search(pos, buffer.end(), buffer.begin(), buffer.end(),
+                     matches, ex, match_flags(buffer, pos, buffer.end())))
         return true;
     wrapped = true;
-    return regex_search(buffer.begin(), buffer.end(), matches, ex,
-                        match_flags(buffer, buffer.begin(), buffer.end(), true, true));
+    return regex_search(buffer.begin(), buffer.end(), buffer.begin(), buffer.end(),
+                        matches, ex, match_flags(buffer, buffer.begin(), buffer.end()));
 }
 
 static bool find_prev(const Buffer& buffer, const BufferIterator& pos,
@@ -865,13 +883,15 @@ static bool find_prev(const Buffer& buffer, const BufferIterator& pos,
                       const Regex& ex, bool& wrapped)
 {
     if (pos != buffer.begin() and
-        backward_regex_search(buffer.begin(), pos, matches, ex,
-                              match_flags(buffer, buffer.begin(), pos, true, buffer.is_end(pos.coord())) |
+        backward_regex_search(buffer.begin(), pos, buffer.begin(), buffer.end(),
+                              matches, ex,
+                              match_flags(buffer, buffer.begin(), pos) |
                               RegexExecFlags::NotInitialNull))
         return true;
     wrapped = true;
-    return backward_regex_search(buffer.begin(), buffer.end(), matches, ex,
-                                 match_flags(buffer, buffer.begin(), buffer.end(), true, true) |
+    return backward_regex_search(buffer.begin(), buffer.end(), buffer.begin(), buffer.end(),
+                                 matches, ex,
+                                 match_flags(buffer, buffer.begin(), buffer.end()) |
                                  RegexExecFlags::NotInitialNull);
 }
 
@@ -887,7 +907,7 @@ Selection find_next_match(const Context& context, const Selection& sel, const Re
       : find_prev(buffer, pos, matches, regex, wrapped);
 
     if (not found or matches[0].first == buffer.end())
-        throw runtime_error(format("'{}': no matches found", regex.str()));
+        throw runtime_error(format("no matches found: '{}'", regex.str()));
 
     CaptureList captures;
     for (const auto& match : matches)
@@ -917,8 +937,7 @@ void select_all_matches(SelectionList& selections, const Regex& regex, int captu
     {
         auto sel_beg = buffer.iterator_at(sel.min());
         auto sel_end = utf8::next(buffer.iterator_at(sel.max()), buffer.end());
-        RegexIt re_it(sel_beg, sel_end, regex,
-                      match_flags(buffer, sel_beg, sel_end, true, true));
+        RegexIt re_it(sel_beg, sel_end, regex, match_flags(buffer, sel_beg, sel_end));
         RegexIt re_end;
 
         for (; re_it != re_end; ++re_it)
@@ -962,8 +981,7 @@ void split_selections(SelectionList& selections, const Regex& regex, int capture
         auto begin = buffer.iterator_at(sel.min());
         auto sel_end = utf8::next(buffer.iterator_at(sel.max()), buffer.end());
 
-        RegexIt re_it(begin, sel_end, regex,
-                      match_flags(buffer, begin, sel_end, true, true));
+        RegexIt re_it(begin, sel_end, regex, match_flags(buffer, begin, sel_end));
         RegexIt re_end;
 
         for (; re_it != re_end; ++re_it)
@@ -1019,6 +1037,7 @@ UnitTest test_find_surrounding{[]()
 
     s = "begin foo begin bar end end";
     check_equal(s.begin() + 6, "begin", "end", ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, s);
+    check_equal(s.begin() + 22, "begin", "end", ObjectFlags::ToBegin | ObjectFlags::ToEnd, 0, "begin bar end");
 }};
 
 }

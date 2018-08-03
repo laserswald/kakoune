@@ -54,9 +54,10 @@ public:
     template<typename T> bool is_of_type() const;
 
     virtual String get_as_string() const = 0;
-    virtual void   set_from_string(StringView str) = 0;
-    virtual void   add_from_string(StringView str) = 0;
-    virtual void   update(const Context& context) = 0;
+    virtual Vector<String> get_as_strings() const = 0;
+    virtual void set_from_strings(ConstArrayView<String> strs) = 0;
+    virtual void add_from_strings(ConstArrayView<String> strs) = 0;
+    virtual void update(const Context& context) = 0;
 
     virtual Option* clone(OptionManager& manager) const = 0;
     OptionManager& manager() const { return m_manager; }
@@ -78,7 +79,7 @@ public:
     virtual void on_option_changed(const Option& option) = 0;
 };
 
-class OptionManager : private OptionManagerWatcher
+class OptionManager final : private OptionManagerWatcher
 {
 public:
     OptionManager(OptionManager& parent);
@@ -90,8 +91,18 @@ public:
 
     void unset_option(StringView name);
 
-    using OptionList = Vector<const Option*>;
-    OptionList flatten_options() const;
+    auto flatten_options() const
+    {
+        auto merge = [](auto&& first, const OptionMap& second) {
+            return concatenated(std::forward<decltype(first)>(first)
+                                | filter([&second](auto& i) { return not second.contains(i.key); }),
+                                second);
+        };
+        static const OptionMap empty;
+        auto& parent = m_parent ? m_parent->m_options : empty;
+        auto& grand_parent = (m_parent and m_parent->m_parent) ? m_parent->m_parent->m_options : empty;
+        return merge(merge(grand_parent, parent), m_options) | transform(&OptionMap::Item::value);
+    }
 
     void register_watcher(OptionManagerWatcher& watcher) const;
     void unregister_watcher(OptionManagerWatcher& watcher) const;
@@ -103,8 +114,9 @@ private:
     // the only one allowed to construct a root option manager
     friend class Scope;
     friend class OptionsRegistry;
+    using OptionMap = HashMap<StringView, std::unique_ptr<Option>, MemoryDomain::Options>;
 
-    HashMap<StringView, std::unique_ptr<Option>, MemoryDomain::Options> m_options;
+    OptionMap m_options;
     OptionManager* m_parent;
 
     mutable Vector<OptionManagerWatcher*, MemoryDomain::Options> m_watchers;
@@ -130,21 +142,27 @@ public:
     const T& get() const { return m_value; }
     T& get_mutable() { return m_value; }
 
+    Vector<String> get_as_strings() const override
+    {
+        return option_to_strings(m_value);
+    }
+
     String get_as_string() const override
     {
         return option_to_string(m_value);
     }
-    void set_from_string(StringView str) override
+
+    void set_from_strings(ConstArrayView<String> strs) override
     {
-        T val;
-        option_from_string(str, val);
-        set(std::move(val));
+        set(option_from_strings(Meta::Type<T>{}, strs));
     }
-    void add_from_string(StringView str) override
+
+    void add_from_strings(ConstArrayView<String> strs) override
     {
-        if (option_add(m_value, str))
+        if (option_add_from_strings(m_value, strs))
             m_manager.on_option_changed(*this);
     }
+
     void update(const Context& context) override
     {
         option_update(m_value, context);
@@ -171,7 +189,8 @@ template<typename T> const T& Option::get() const
 {
     auto* typed_opt = dynamic_cast<const TypedOption<T>*>(this);
     if (not typed_opt)
-        throw runtime_error(format("option '{}' is not of type '{}'", name(), typeid(T).name()));
+        throw runtime_error(format("option '{}' is not of type '{}'", name(),
+                                   option_type_name(Meta::Type<T>{})));
     return typed_opt->get();
 }
 
@@ -184,7 +203,8 @@ template<typename T> void Option::set(const T& val, bool notify)
 {
     auto* typed_opt = dynamic_cast<TypedOption<T>*>(this);
     if (not typed_opt)
-        throw runtime_error(format("option '{}' is not of type '{}'", name(), typeid(T).name()));
+        throw runtime_error(format("option '{}' is not of type '{}'", name(),
+                                   option_type_name(Meta::Type<T>{})));
     return typed_opt->set(val, notify);
 }
 
@@ -203,13 +223,11 @@ public:
                            const T& value,
                            OptionFlags flags = OptionFlags::None)
     {
-        auto is_not_identifier = [](char c) {
-            return (c < 'a' or c > 'z') and
-                   (c < 'A' or c > 'Z') and
-                   (c < '0' or c > '9') and c != '_';
+        auto is_option_identifier = [](char c) {
+            return is_basic_alpha(c) or is_basic_digit(c) or c == '_';
         };
 
-        if (contains_that(name, is_not_identifier))
+        if (not all_of(name, is_option_identifier))
             throw runtime_error{format("name '{}' contains char out of [a-zA-Z0-9_]", name)};
 
         auto& opts = m_global_manager.m_options;

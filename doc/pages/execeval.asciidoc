@@ -3,11 +3,11 @@
 == Description
 
 The *execute-keys* and *evaluate-commands* commands can be used to run
-Kakoune commands, and should be used as follows:
+Kakoune commands:
 
 ----------------------------
-execute-keys [<flags>] <key> ...
-evaluate-commands [<flags>] <command> ...
+execute-keys [<switches>] <key> ...
+evaluate-commands [<switches>] <command> ...
 ----------------------------
 
 *execute-keys* runs keys as if they were pressed, whereas *evaluate-commands*
@@ -15,11 +15,12 @@ evaluates its given parameters as if they were entered in the command prompt.
 By default, their execution happens within the context of the current client,
 and stops when the last key/command is reached, or an error is raised.
 
-These two commands also save the following registers, who are then restored
+*execute-keys* also save the following registers, who are then restored
 when the commands have been executed: */*, *"*, *|*, *^*, *@*.
+*evaluate-commands* does not save any registers by default.
 (See <<registers#,`:doc registers`>>)
 
-== Optional flags
+== Optional switches
 
 *-client* <name>::
     execute in the context of the client named *name*
@@ -41,19 +42,24 @@ when the commands have been executed: */*, *"*, *|*, *^*, *@*.
 
 *-buffer* <names>::
     execute in the context of each buffers in the comma separated list
-    *names*, as a name can be used to iterate on all buffers
-
-*-no-hooks*::
-    disable hook execution while executing the keys/commands
-    (See <<hooks#,`:doc hooks`>>)
-
-*-with-maps*::
-    use user key mapping in instead of built in keys (*execute-keys* only)
-    (See <<mapping#,`:doc mapping`>>)
+    *names*. `*` as a name can be used to iterate on all buffers
 
 *-save-regs* <regs>::
     regs is a string of registers to be restored after execution (overwrites
     the list of registers saved by default, c.f. description)
 
-*-collapse-jumps*::
-    collapse all jumps into a single one from initial selection
+== evaluate-commands specific switches
+
+*-no-hooks*::
+    disable hook execution while executing the keys/commands
+    (See <<hooks#,`:doc hooks`>>)
+
+== execute-keys specific switches
+
+*-with-maps*::
+    use user key mapping in instead of built in keys
+    (See <<mapping#,`:doc mapping`>>)
+
+*-with-hooks*::
+    the execution of keys will trigger existing hooks
+    (See <<hooks#,`:doc hooks`>>)

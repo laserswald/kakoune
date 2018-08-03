@@ -59,6 +59,7 @@ struct CompiledRegex : RefCountable, UseMemoryDomain<MemoryDomain::Regex>
         Literal,
         Literal_IgnoreCase,
         AnyChar,
+        AnyCharExceptNewLine,
         Class,
         CharacterType,
         Jump,
@@ -101,24 +102,26 @@ struct CompiledRegex : RefCountable, UseMemoryDomain<MemoryDomain::Regex>
     uint32_t first_backward_inst; // -1 if no backward support, 0 if only backward, >0 if both forward and backward
     uint32_t save_count;
 
-    struct StartDesc
+    struct StartDesc : UseMemoryDomain<MemoryDomain::Regex>
     {
-        static constexpr size_t count = 256;
-        static constexpr Codepoint other = 256;
-        bool map[count+1];
+        static constexpr Codepoint count = 128;
+        static constexpr Codepoint other = 0;
+        bool map[count];
     };
 
     std::unique_ptr<StartDesc> forward_start_desc;
     std::unique_ptr<StartDesc> backward_start_desc;
 };
 
+String dump_regex(const CompiledRegex& program);
+
 enum class RegexCompileFlags
 {
     None     = 0,
     NoSubs   = 1 << 0,
     Optimize = 1 << 1,
-    Backward = 1 << 1,
-    NoForward = 1 << 2,
+    Backward = 1 << 2,
+    NoForward = 1 << 3,
 };
 constexpr bool with_bit_ops(Meta::Type<RegexCompileFlags>) { return true; }
 
@@ -132,12 +135,9 @@ enum class RegexExecFlags
     NotEndOfLine      = 1 << 2,
     NotBeginOfWord    = 1 << 3,
     NotEndOfWord      = 1 << 4,
-    NotBeginOfSubject = 1 << 5,
-    NotEndOfSubject   = 1 << 6,
-    NotInitialNull    = 1 << 7,
-    AnyMatch          = 1 << 8,
-    NoSaves           = 1 << 9,
-    PrevAvailable     = 1 << 10,
+    NotInitialNull    = 1 << 5,
+    AnyMatch          = 1 << 6,
+    NoSaves           = 1 << 7,
 };
 
 constexpr bool with_bit_ops(Meta::Type<RegexExecFlags>) { return true; }
@@ -167,41 +167,22 @@ public:
         }
     }
 
-    bool exec(Iterator begin, Iterator end, RegexExecFlags flags)
+    bool exec(Iterator begin, Iterator end,
+              Iterator subject_begin, Iterator subject_end,
+              RegexExecFlags flags)
     {
         if (flags & RegexExecFlags::NotInitialNull and begin == end)
             return false;
 
         constexpr bool forward = direction == MatchDirection::Forward;
-        const bool prev_avail = flags & RegexExecFlags::PrevAvailable;
 
-        m_begin = Utf8It{utf8::iterator<Iterator>{forward ? begin : end,
-                                                  prev_avail ? begin-1 : begin, end}};
-        m_end = Utf8It{utf8::iterator<Iterator>{forward ? end : begin,
-                                                prev_avail ? begin-1 : begin, end}};
-        if (forward)
-            m_flags = flags;
-        else // Flip line begin/end flags as we flipped the instructions on compilation.
-            m_flags = (RegexExecFlags)(flags & ~(RegexExecFlags::NotEndOfLine | RegexExecFlags::NotBeginOfLine)) |
+
+        if (not forward) // Flip line begin/end flags as we flipped the instructions on compilation.
+            flags = (RegexExecFlags)(flags & ~(RegexExecFlags::NotEndOfLine | RegexExecFlags::NotBeginOfLine)) |
                 ((flags & RegexExecFlags::NotEndOfLine) ? RegexExecFlags::NotBeginOfLine : RegexExecFlags::None) |
                 ((flags & RegexExecFlags::NotBeginOfLine) ? RegexExecFlags::NotEndOfLine : RegexExecFlags::None);
 
         const bool search = (flags & RegexExecFlags::Search);
-        Utf8It start{m_begin};
-        const auto& start_desc = direction == MatchDirection::Forward ? m_program.forward_start_desc
-                                                                      : m_program.backward_start_desc;
-        if (start_desc)
-        {
-            if (search)
-            {
-                to_next_start(start, m_end, *start_desc);
-                if (start == m_end) // If start_desc is not null, it means we consume at least one char
-                    return false;
-            }
-            else if (start != m_end and
-                     not start_desc->map[std::min(*start, CompiledRegex::StartDesc::other)])
-                return false;
-        }
 
         ConstArrayView<CompiledRegex::Instruction> instructions{m_program.instructions};
         if (direction == MatchDirection::Forward)
@@ -211,13 +192,38 @@ public:
         if (not search)
             instructions = instructions.subrange(CompiledRegex::search_prefix_size);
 
-        return exec_program(start, instructions);
+
+        const ExecConfig config{
+            EffectiveIt{Utf8It{forward ? begin : end, subject_begin, subject_end}},
+            EffectiveIt{Utf8It{forward ? end : begin, subject_begin, subject_end}},
+            EffectiveIt{Utf8It{forward ? subject_begin : subject_end, subject_begin, subject_end}},
+            EffectiveIt{Utf8It{forward ? subject_end : subject_begin, subject_begin, subject_end}},
+            flags,
+            instructions
+        };
+
+        EffectiveIt start{config.begin};
+        if (const auto& start_desc = direction == MatchDirection::Forward ?
+            m_program.forward_start_desc : m_program.backward_start_desc)
+        {
+            if (search)
+            {
+                to_next_start(start, config.end, *start_desc);
+                if (start == config.end) // If start_desc is not null, it means we consume at least one char
+                    return false;
+            }
+            else if (start != config.end and
+                     not start_desc->map[*start < StartDesc::count ? *start : StartDesc::other])
+                return false;
+        }
+
+        return exec_program(std::move(start), config);
     }
 
     ArrayView<const Iterator> captures() const
     {
-        if (m_captures)
-            return { m_captures->pos, m_program.save_count };
+        if (m_captures >= 0)
+            return { m_saves[m_captures]->pos, m_program.save_count };
         return {};
     }
 
@@ -226,26 +232,27 @@ private:
     {
         union // ref count when in use, next_free when in free list
         {
-            int refcount;
-            Saves* next_free;
+            int16_t refcount;
+            int16_t next_free;
         };
         Iterator pos[1];
     };
 
     template<bool copy>
-    Saves* new_saves(Iterator* pos)
+    int16_t new_saves(Iterator* pos)
     {
         kak_assert(not copy or pos != nullptr);
         const auto count = m_program.save_count;
-        if (m_first_free != nullptr)
+        if (m_first_free >= 0)
         {
-            Saves* res = m_first_free;
-            m_first_free = res->next_free;
-            res->refcount = 1;
+            const int16_t res = m_first_free;
+            Saves* save = m_saves[res];
+            m_first_free = save->next_free;
+            save->refcount = 1;
             if (copy)
-                std::copy(pos, pos + count, res->pos);
+                std::copy(pos, pos + count, save->pos);
             else
-                std::fill(res->pos, res->pos + count, Iterator{});
+                std::fill(save->pos, save->pos + count, Iterator{});
 
             return res;
         }
@@ -255,154 +262,164 @@ private:
         for (size_t i = 1; i < count; ++i)
             new (&saves->pos[i]) Iterator{copy ? pos[i] : Iterator{}};
         m_saves.push_back(saves);
-        return saves;
+        return static_cast<int16_t>(m_saves.size() - 1);
     }
 
-    void release_saves(Saves* saves)
+    void release_saves(int16_t saves)
     {
-        if (saves and --saves->refcount == 0)
+        if (saves >= 0 and --m_saves[saves]->refcount == 0)
         {
-            saves->next_free = m_first_free;
+            m_saves[saves]->next_free = m_first_free;
             m_first_free = saves;
         }
     };
 
     struct Thread
     {
-        const CompiledRegex::Instruction* inst;
-        Saves* saves;
+        int16_t inst;
+        int16_t saves;
     };
 
-    using Utf8It = std::conditional_t<direction == MatchDirection::Forward,
-                                      utf8::iterator<Iterator>,
-                                      std::reverse_iterator<utf8::iterator<Iterator>>>;
+    using StartDesc = CompiledRegex::StartDesc;
+    using Utf8It = utf8::iterator<Iterator>;
+    using EffectiveIt = std::conditional_t<direction == MatchDirection::Forward,
+                                           Utf8It, std::reverse_iterator<Utf8It>>;
 
-    struct ExecState
+    struct ExecConfig
     {
-        Vector<Thread, MemoryDomain::Regex> current_threads;
-        Vector<Thread, MemoryDomain::Regex> next_threads;
-        uint16_t step = -1;
+        const EffectiveIt begin;
+        const EffectiveIt end;
+        const EffectiveIt subject_begin;
+        const EffectiveIt subject_end;
+        const RegexExecFlags flags;
+        ConstArrayView<CompiledRegex::Instruction> instructions;
     };
 
     enum class StepResult { Consumed, Matched, Failed, FindNextStart };
 
     // Steps a thread until it consumes the current character, matches or fail
-    StepResult step(Utf8It& pos, Thread& thread, ExecState& state)
+    StepResult step(EffectiveIt& pos, uint16_t current_step, Thread& thread, const ExecConfig& config)
     {
-        const bool no_saves = (m_flags & RegexExecFlags::NoSaves);
+        const bool no_saves = (config.flags & RegexExecFlags::NoSaves);
         auto* instructions = m_program.instructions.data();
         while (true)
         {
-            auto& inst = *thread.inst++;
-            if (inst.last_step == state.step)
+            auto& inst = instructions[thread.inst++];
+            // if this instruction was already executed for this step in another thread,
+            // then this thread is redundant and can be dropped
+            if (inst.last_step == current_step)
                 return StepResult::Failed;
-            inst.last_step = state.step;
+            inst.last_step = current_step;
 
             switch (inst.op)
             {
                 case CompiledRegex::Literal:
-                    if (pos != m_end and inst.param == *pos)
+                    if (pos != config.end and inst.param == *pos)
                         return StepResult::Consumed;
                     return StepResult::Failed;
                 case CompiledRegex::Literal_IgnoreCase:
-                    if (pos != m_end and inst.param == to_lower(*pos))
+                    if (pos != config.end and inst.param == to_lower(*pos))
                         return StepResult::Consumed;
                     return StepResult::Failed;
                 case CompiledRegex::AnyChar:
                     return StepResult::Consumed;
+                case CompiledRegex::AnyCharExceptNewLine:
+                    if (pos != config.end and *pos != '\n')
+                        return StepResult::Consumed;
+                    return StepResult::Failed;
                 case CompiledRegex::Jump:
-                    thread.inst = instructions + inst.param;
+                    thread.inst = static_cast<int16_t>(inst.param);
                     break;
                 case CompiledRegex::Split_PrioritizeParent:
                 {
-                    if (thread.saves)
-                        ++thread.saves->refcount;
-                    state.current_threads.push_back({instructions + inst.param, thread.saves});
+                    if (thread.saves >= 0)
+                        ++m_saves[thread.saves]->refcount;
+                    m_threads.push_current({static_cast<int16_t>(inst.param), thread.saves});
                     break;
                 }
                 case CompiledRegex::Split_PrioritizeChild:
                 {
-                    if (thread.saves)
-                        ++thread.saves->refcount;
-                    state.current_threads.push_back({thread.inst, thread.saves});
-                    thread.inst = instructions + inst.param;
+                    if (thread.saves >= 0)
+                        ++m_saves[thread.saves]->refcount;
+                    m_threads.push_current({thread.inst, thread.saves});
+                    thread.inst = static_cast<uint16_t>(inst.param);
                     break;
                 }
                 case CompiledRegex::Save:
                 {
                     if (no_saves)
                         break;
-                    if (not thread.saves)
+                    if (thread.saves < 0)
                         thread.saves = new_saves<false>(nullptr);
-                    else if (thread.saves->refcount > 1)
+                    else if (m_saves[thread.saves]->refcount > 1)
                     {
-                        --thread.saves->refcount;
-                        thread.saves = new_saves<true>(thread.saves->pos);
+                        --m_saves[thread.saves]->refcount;
+                        thread.saves = new_saves<true>(m_saves[thread.saves]->pos);
                     }
-                    thread.saves->pos[inst.param] = get_base(pos);
+                    m_saves[thread.saves]->pos[inst.param] = get_base(pos);
                     break;
                 }
                 case CompiledRegex::Class:
-                    if (pos == m_end)
+                    if (pos == config.end)
                         return StepResult::Failed;
                     return is_character_class(m_program.character_classes[inst.param], *pos) ?
                         StepResult::Consumed : StepResult::Failed;
                 case CompiledRegex::CharacterType:
-                    if (pos == m_end)
+                    if (pos == config.end)
                         return StepResult::Failed;
                     return is_ctype((CharacterType)inst.param, *pos) ?
-                        StepResult::Consumed : StepResult::Failed;;
+                        StepResult::Consumed : StepResult::Failed;
                 case CompiledRegex::LineStart:
-                    if (not is_line_start(pos))
+                    if (not is_line_start(pos, config))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::LineEnd:
-                    if (not is_line_end(pos))
+                    if (not is_line_end(pos, config))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::WordBoundary:
-                    if (not is_word_boundary(pos))
+                    if (not is_word_boundary(pos, config))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::NotWordBoundary:
-                    if (is_word_boundary(pos))
+                    if (is_word_boundary(pos, config))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::SubjectBegin:
-                    if (pos != m_begin or (m_flags & RegexExecFlags::NotBeginOfSubject))
+                    if (pos != config.subject_begin)
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::SubjectEnd:
-                    if (pos != m_end or (m_flags & RegexExecFlags::NotEndOfSubject))
+                    if (pos != config.subject_end)
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::LookAhead:
                 case CompiledRegex::NegativeLookAhead:
-                    if (lookaround<MatchDirection::Forward, false>(inst.param, pos) !=
+                    if (lookaround<MatchDirection::Forward, false>(inst.param, pos, config) !=
                         (inst.op == CompiledRegex::LookAhead))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::LookAhead_IgnoreCase:
                 case CompiledRegex::NegativeLookAhead_IgnoreCase:
-                    if (lookaround<MatchDirection::Forward, true>(inst.param, pos) !=
+                    if (lookaround<MatchDirection::Forward, true>(inst.param, pos, config) !=
                         (inst.op == CompiledRegex::LookAhead_IgnoreCase))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::LookBehind:
                 case CompiledRegex::NegativeLookBehind:
-                    if (lookaround<MatchDirection::Backward, false>(inst.param, pos) !=
+                    if (lookaround<MatchDirection::Backward, false>(inst.param, pos, config) !=
                         (inst.op == CompiledRegex::LookBehind))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::LookBehind_IgnoreCase:
                 case CompiledRegex::NegativeLookBehind_IgnoreCase:
-                    if (lookaround<MatchDirection::Backward, true>(inst.param, pos) !=
+                    if (lookaround<MatchDirection::Backward, true>(inst.param, pos, config) !=
                         (inst.op == CompiledRegex::LookBehind_IgnoreCase))
                         return StepResult::Failed;
                     break;
                 case CompiledRegex::FindNextStart:
-                    kak_assert(state.current_threads.empty()); // search thread should by construction be the lower priority one
-                    if (state.next_threads.empty())
+                    kak_assert(m_threads.current_is_empty()); // search thread should by construction be the lower priority one
+                    if (m_threads.next_is_empty())
                         return StepResult::FindNextStart;
                     return StepResult::Consumed;
                 case CompiledRegex::Match:
@@ -412,35 +429,37 @@ private:
         return StepResult::Failed;
     }
 
-    bool exec_program(Utf8It pos, ConstArrayView<CompiledRegex::Instruction> instructions)
+    bool exec_program(EffectiveIt pos, const ExecConfig& config)
     {
-        ExecState state;
-        state.current_threads.push_back({instructions.begin(), nullptr});
+        kak_assert(m_threads.current_is_empty() and m_threads.next_is_empty());
+        release_saves(m_captures);
+        m_captures = -1;
+        m_threads.push_current({static_cast<int16_t>(&config.instructions[0] - &m_program.instructions[0]), -1});
 
         const auto& start_desc = direction == MatchDirection::Forward ? m_program.forward_start_desc
                                                                       : m_program.backward_start_desc;
 
+        uint16_t current_step = -1;
         bool found_match = false;
         while (true) // Iterate on all codepoints and once at the end
         {
-            if (++state.step == 0)
+            if (++current_step == 0)
             {
                 // We wrapped, avoid potential collision on inst.last_step by resetting them
-                for (auto& inst : instructions)
+                for (auto& inst : config.instructions)
                     inst.last_step = 0;
-                state.step = 1; // step 0 is never valid
+                current_step = 1; // step 0 is never valid
             }
 
             bool find_next_start = false;
-            while (not state.current_threads.empty())
+            while (not m_threads.current_is_empty())
             {
-                auto thread = state.current_threads.back();
-                state.current_threads.pop_back();
-                switch (step(pos, thread, state))
+                auto thread = m_threads.pop_current();
+                switch (step(pos, current_step, thread, config))
                 {
                 case StepResult::Matched:
-                    if ((pos != m_end and not (m_flags & RegexExecFlags::Search)) or
-                        (m_flags & RegexExecFlags::NotInitialNull and pos == m_begin))
+                    if ((pos != config.end and not (config.flags & RegexExecFlags::Search)) or
+                        (config.flags & RegexExecFlags::NotInitialNull and pos == config.begin))
                     {
                         release_saves(thread.saves);
                         continue;
@@ -451,62 +470,62 @@ private:
                     found_match = true;
 
                     // remove this and lower priority threads
-                    for (auto& t : state.current_threads)
-                        release_saves(t.saves);
-                    state.current_threads.clear();
+                    while (not m_threads.current_is_empty())
+                        release_saves(m_threads.pop_current().saves);
                     break;
                 case StepResult::Failed:
                     release_saves(thread.saves);
                     break;
                 case StepResult::Consumed:
-                    if (thread.inst->scheduled)
+                    if (m_program.instructions[thread.inst].scheduled)
                     {
                         release_saves(thread.saves);
                         continue;
                     }
-                    thread.inst->scheduled = true;
-                    state.next_threads.push_back(thread);
+                    m_program.instructions[thread.inst].scheduled = true;
+                    m_threads.push_next(thread);
                     break;
                 case StepResult::FindNextStart:
-                    state.next_threads.push_back(thread);
+                    m_threads.push_next(thread);
                     find_next_start = true;
                     break;
                 }
             }
-            for (auto& thread : state.next_threads)
-                thread.inst->scheduled = false;
+            for (auto& thread : m_threads.next_threads())
+                m_program.instructions[thread.inst].scheduled = false;
 
-            if (pos == m_end or state.next_threads.empty() or
-                (found_match and (m_flags & RegexExecFlags::AnyMatch)))
+            if (pos == config.end or m_threads.next_is_empty() or
+                (found_match and (config.flags & RegexExecFlags::AnyMatch)))
             {
-                for (auto& t : state.next_threads)
+                for (auto& t : m_threads.next_threads())
                     release_saves(t.saves);
+                m_threads.clear_next();
                 return found_match;
             }
 
-            std::swap(state.current_threads, state.next_threads);
-            std::reverse(state.current_threads.begin(), state.current_threads.end());
+            m_threads.swap_next();
             ++pos;
 
             if (find_next_start and start_desc)
-                to_next_start(pos, m_end, *start_desc);
+                to_next_start(pos, config.end, *start_desc);
         }
     }
 
-    void to_next_start(Utf8It& start, const Utf8It& end,
-                       const CompiledRegex::StartDesc& start_desc)
+    void to_next_start(EffectiveIt& start, const EffectiveIt& end, const StartDesc& start_desc)
     {
-        while (start != end and *start >= 0 and
-               not start_desc.map[std::min(*start, CompiledRegex::StartDesc::other)])
+        Codepoint cp;
+        while (start != end and (cp = *start) >= 0 and
+               not start_desc.map[cp < StartDesc::count ? cp : StartDesc::other])
             ++start;
     }
 
     template<MatchDirection look_direction, bool ignore_case>
-    bool lookaround(uint32_t index, Utf8It pos) const
+    bool lookaround(uint32_t index, EffectiveIt pos, const ExecConfig& config) const
     {
+        const auto end = (look_direction == MatchDirection::Forward ? config.subject_end : config.subject_begin);
         for (auto it = m_program.lookarounds.begin() + index; *it != -1; ++it)
         {
-            if (pos == (look_direction == MatchDirection::Forward ? m_end : m_begin))
+            if (pos == end)
                 return false;
             Codepoint cp = (look_direction == MatchDirection::Forward ? *pos : *(pos-1));
             if (ignore_case)
@@ -515,6 +534,11 @@ private:
             const Codepoint ref = *it;
             if (ref == 0xF000)
             {} // any character matches
+            else if (ref == 0xF001)
+            {
+                if (cp == '\n')
+                    return false;
+            }
             else if (ref > 0xF0000 and ref < 0xF8000)
             {
                 if (not is_character_class(m_program.character_classes[ref - 0xF0001], cp))
@@ -533,85 +557,79 @@ private:
         return true;
     }
 
-    bool is_line_start(const Utf8It& pos) const
+    static bool is_line_start(const EffectiveIt& pos, const ExecConfig& config)
     {
-        if (not (m_flags & RegexExecFlags::PrevAvailable) and pos == m_begin)
-            return not (m_flags & RegexExecFlags::NotBeginOfLine);
+        if (pos == config.subject_begin)
+            return not (config.flags & RegexExecFlags::NotBeginOfLine);
         return *(pos-1) == '\n';
     }
 
-    bool is_line_end(const Utf8It& pos) const
+    static bool is_line_end(const EffectiveIt& pos, const ExecConfig& config)
     {
-        if (pos == m_end)
-            return not (m_flags & RegexExecFlags::NotEndOfLine);
+        if (pos == config.subject_end)
+            return not (config.flags & RegexExecFlags::NotEndOfLine);
         return *pos == '\n';
     }
 
-    bool is_word_boundary(const Utf8It& pos) const
+    static bool is_word_boundary(const EffectiveIt& pos, const ExecConfig& config)
     {
-        if (not (m_flags & RegexExecFlags::PrevAvailable) and pos == m_begin)
-            return not (m_flags & RegexExecFlags::NotBeginOfWord);
-        if (pos == m_end)
-            return not (m_flags & RegexExecFlags::NotEndOfWord);
+        if (pos == config.subject_begin)
+            return not (config.flags & RegexExecFlags::NotBeginOfWord);
+        if (pos == config.subject_end)
+            return not (config.flags & RegexExecFlags::NotEndOfWord);
         return is_word(*(pos-1)) != is_word(*pos);
     }
 
-    static const Iterator& get_base(const utf8::iterator<Iterator>& it) { return it.base(); }
-    static Iterator get_base(const std::reverse_iterator<utf8::iterator<Iterator>>& it) { return it.base().base(); }
+    static const Iterator& get_base(const Utf8It& it) { return it.base(); }
+    static Iterator get_base(const std::reverse_iterator<Utf8It>& it) { return it.base().base(); }
 
     const CompiledRegex& m_program;
 
-    Utf8It m_begin;
-    Utf8It m_end;
-    RegexExecFlags m_flags;
+    struct DualThreadStack
+    {
+        bool current_is_empty() const { return m_current == 0; }
+        bool next_is_empty() const { return m_next == m_capacity; }
 
+        void push_current(Thread thread) { grow_ifn(); m_data[m_current++] = thread; }
+        Thread pop_current() { kak_assert(m_current > 0); return m_data[--m_current]; }
+
+        void push_next(Thread thread) { grow_ifn(); m_data[--m_next] = thread; }
+        void clear_next() { m_next = m_capacity; }
+        ConstArrayView<Thread> next_threads() const { return { m_data.get() + m_next, m_data.get() + m_capacity }; }
+
+        void swap_next()
+        {
+            for (; m_next < m_capacity; m_current++, m_next++)
+                m_data[m_current] = m_data[m_next];
+        }
+
+    private:
+        void grow_ifn()
+        {
+            if (m_current != m_next)
+                return;
+            const auto new_capacity = m_capacity ? m_capacity * 2 : 4;
+            Thread* new_data = new Thread[new_capacity];
+            Thread* data = m_data.get();
+            std::copy(data, data + m_current, new_data);
+            const auto new_next = new_capacity - (m_capacity - m_next);
+            std::copy(data + m_next, data + m_capacity, new_data + new_next);
+            m_capacity = new_capacity;
+            m_next = new_next;
+            m_data.reset(new_data);
+        }
+
+        std::unique_ptr<Thread[]> m_data = nullptr;
+        int16_t m_capacity = 0;
+        int16_t m_current = 0;
+        int16_t m_next = 0;
+    };
+
+    DualThreadStack m_threads;
     Vector<Saves*, MemoryDomain::Regex> m_saves;
-    Saves* m_first_free = nullptr;
-
-    Saves* m_captures = nullptr;
+    int16_t m_first_free = -1;
+    int16_t m_captures = -1;
 };
-
-template<typename It, MatchDirection direction = MatchDirection::Forward>
-bool regex_match(It begin, It end, const CompiledRegex& re, RegexExecFlags flags = RegexExecFlags::None)
-{
-    ThreadedRegexVM<It, direction> vm{re};
-    return vm.exec(begin, end, (RegexExecFlags)(flags & ~(RegexExecFlags::Search)) |
-                               RegexExecFlags::AnyMatch | RegexExecFlags::NoSaves);
-}
-
-template<typename It, MatchDirection direction = MatchDirection::Forward>
-bool regex_match(It begin, It end, Vector<It, MemoryDomain::Regex>& captures, const CompiledRegex& re,
-                 RegexExecFlags flags = RegexExecFlags::None)
-{
-    ThreadedRegexVM<It, direction> vm{re};
-    if (vm.exec(begin, end,  flags & ~(RegexExecFlags::Search)))
-    {
-        std::copy(vm.captures().begin(), vm.captures().end(), std::back_inserter(captures));
-        return true;
-    }
-    return false;
-}
-
-template<typename It, MatchDirection direction = MatchDirection::Forward>
-bool regex_search(It begin, It end, const CompiledRegex& re,
-                  RegexExecFlags flags = RegexExecFlags::None)
-{
-    ThreadedRegexVM<It, direction> vm{re};
-    return vm.exec(begin, end, flags | RegexExecFlags::Search | RegexExecFlags::AnyMatch | RegexExecFlags::NoSaves);
-}
-
-template<typename It, MatchDirection direction = MatchDirection::Forward>
-bool regex_search(It begin, It end, Vector<It, MemoryDomain::Regex>& captures, const CompiledRegex& re,
-                  RegexExecFlags flags = RegexExecFlags::None)
-{
-    ThreadedRegexVM<It, direction> vm{re};
-    if (vm.exec(begin, end, flags | RegexExecFlags::Search))
-    {
-        std::move(vm.captures().begin(), vm.captures().end(), std::back_inserter(captures));
-        return true;
-    }
-    return false;
-}
 
 }
 

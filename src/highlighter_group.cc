@@ -12,7 +12,7 @@ void HighlighterGroup::do_highlight(HighlightContext context, DisplayBuffer& dis
         hl.value->highlight(context, display_buffer, range);
 }
 
-void HighlighterGroup::do_compute_display_setup(HighlightContext context, DisplaySetup& setup)
+void HighlighterGroup::do_compute_display_setup(HighlightContext context, DisplaySetup& setup) const
 {
     for (auto& hl : m_highlighters)
         hl.value->compute_display_setup(context, setup);
@@ -24,17 +24,15 @@ void HighlighterGroup::fill_unique_ids(Vector<StringView>& unique_ids) const
         hl.value->fill_unique_ids(unique_ids);
 }
 
-void HighlighterGroup::add_child(HighlighterAndId&& hl)
+void HighlighterGroup::add_child(String name, std::unique_ptr<Highlighter>&& hl)
 {
-    if ((hl.second->passes() & passes()) != hl.second->passes())
-        throw runtime_error{"Cannot add that highlighter to this group, passes dont match"};
+    if ((hl->passes() & passes()) != hl->passes())
+        throw runtime_error{"cannot add that highlighter to this group, passes don't match"};
 
-    hl.first = replace(hl.first, "/", "<slash>");
+    if (m_highlighters.contains(name))
+        throw runtime_error(format("duplicate id: '{}'", name));
 
-    if (m_highlighters.contains(hl.first))
-        throw runtime_error(format("duplicate id: '{}'", hl.first));
-
-    m_highlighters.insert({std::move(hl.first), std::move(hl.second)});
+    m_highlighters.insert({std::move(name), std::move(hl)});
 }
 
 void HighlighterGroup::remove_child(StringView id)
@@ -80,17 +78,17 @@ void Highlighters::highlight(HighlightContext context, DisplayBuffer& display_bu
     m_group.fill_unique_ids(disabled_ids);
 
     if (m_parent)
-        m_parent->highlight({context.context, context.pass, disabled_ids}, display_buffer, range);
+        m_parent->highlight({context.context, context.setup, context.pass, disabled_ids}, display_buffer, range);
     m_group.highlight(context, display_buffer, range);
 }
 
-void Highlighters::compute_display_setup(HighlightContext context, DisplaySetup& setup)
+void Highlighters::compute_display_setup(HighlightContext context, DisplaySetup& setup) const
 {
     Vector<StringView> disabled_ids(context.disabled_ids.begin(), context.disabled_ids.end());
     m_group.fill_unique_ids(disabled_ids);
 
     if (m_parent)
-        m_parent->compute_display_setup({context.context, context.pass, disabled_ids}, setup);
+        m_parent->compute_display_setup({context.context, context.setup, context.pass, disabled_ids}, setup);
     m_group.compute_display_setup(context, setup);
 }
 

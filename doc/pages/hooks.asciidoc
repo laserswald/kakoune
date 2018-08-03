@@ -19,7 +19,7 @@ For example to automatically use line numbering with .cc files, use the
 following command:
 
 ----------------------------------------------------
-hook global WinCreate .*\.cc %{ add-highlighter number_lines }
+hook global WinCreate .*\.cc %{ add-highlighter number-lines }
 ----------------------------------------------------
 
 If *group* is given, make this hook part of the named group. Groups are used
@@ -85,6 +85,9 @@ of the given *group*.
 *WinSetOption* `<option_name>=<new_value>`::
     an option was set in a window context
 
+*GlobalSetOption* `<option_name>=<new_value>`::
+    an option was set at the global scope
+
 *BufSetOption* `<option_name>=<new_value>`::
     an option was set in a buffer context
 
@@ -103,6 +106,10 @@ of the given *group*.
 *BufWritePost* `filename`::
     executed just after a buffer is written
 
+*BufReload* `filename`::
+    executed after a buffer reload has been triggered by an external
+    modification to its file
+
 *BufClose* `buffer name`::
     executed when a buffer is deleted, while it is still valid
 
@@ -120,7 +127,7 @@ of the given *group*.
 *RuntimeError* `error message`::
     an error was encountered while executing a user command
 
-*InputModeChange* `<old mode>:<new mode>`::
+*ModeChange* `<old mode>:<new mode>`::
     Triggered whenever the current input mode changes
 
 *KakBegin* `session name`::

@@ -11,30 +11,30 @@ hook global BufCreate .*[.](py) %{
 # Highlighters & Completion
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code python \
-    double_string '"""' '"""'            '' \
-    single_string "'''" "'''"            '' \
-    double_string '"'   (?<!\\)(\\\\)*"  '' \
-    single_string "'"   (?<!\\)(\\\\)*'  '' \
-    comment       '#'   '$'              ''
+add-highlighter shared/python regions
+add-highlighter shared/python/code default-region group
+add-highlighter shared/python/docstring     region -match-capture ("""|''') ("""|''') regions
+add-highlighter shared/python/double_string region '"'   (?<!\\)(\\\\)*"  fill string
+add-highlighter shared/python/single_string region "'"   (?<!\\)(\\\\)*'  fill string
+add-highlighter shared/python/comment       region '#'   '$'              fill comment
 
 # Integer formats
-add-highlighter shared/python/code regex '(?i)\b0b[01]+l?\b' 0:value
-add-highlighter shared/python/code regex '(?i)\b0x[\da-f]+l?\b' 0:value
-add-highlighter shared/python/code regex '(?i)\b0o?[0-7]+l?\b' 0:value
-add-highlighter shared/python/code regex '(?i)\b([1-9]\d*|0)l?\b' 0:value
+add-highlighter shared/python/code/ regex '(?i)\b0b[01]+l?\b' 0:value
+add-highlighter shared/python/code/ regex '(?i)\b0x[\da-f]+l?\b' 0:value
+add-highlighter shared/python/code/ regex '(?i)\b0o?[0-7]+l?\b' 0:value
+add-highlighter shared/python/code/ regex '(?i)\b([1-9]\d*|0)l?\b' 0:value
 # Float formats
-add-highlighter shared/python/code regex '\b\d+[eE][+-]?\d+\b' 0:value
-add-highlighter shared/python/code regex '(\b\d+)?\.\d+\b' 0:value
-add-highlighter shared/python/code regex '\b\d+\.' 0:value
+add-highlighter shared/python/code/ regex '\b\d+[eE][+-]?\d+\b' 0:value
+add-highlighter shared/python/code/ regex '(\b\d+)?\.\d+\b' 0:value
+add-highlighter shared/python/code/ regex '\b\d+\.' 0:value
 # Imaginary formats
-add-highlighter shared/python/code regex '\b\d+\+\d+[jJ]\b' 0:value
+add-highlighter shared/python/code/ regex '\b\d+\+\d+[jJ]\b' 0:value
 
-add-highlighter shared/python/double_string fill string
-add-highlighter shared/python/single_string fill string
-add-highlighter shared/python/comment       fill comment
+add-highlighter shared/python/docstring/ default-region fill string
+add-highlighter shared/python/docstring/ region '>>> \K'    '\z' ref python
+add-highlighter shared/python/docstring/ region '\.\.\. \K'    '\z' ref python
 
-%sh{
+evaluate-commands %sh{
     # Grammar
     values="True|False|None|self|inf"
     meta="import|from"
@@ -80,7 +80,7 @@ add-highlighter shared/python/comment       fill comment
 
     # Keyword list is collected using `keyword.kwlist` from `keyword`
     keywords="and|as|assert|break|class|continue|def|del|elif|else|except|exec"
-    keywords="${keywords}|finally|for|global|if|in|is|lambda|not|or|pass|print"
+    keywords="${keywords}|finally|for|global|if|in|is|lambda|nonlocal|not|or|pass|print"
     keywords="${keywords}|raise|return|try|while|with|yield"
 
     types="bool|buffer|bytearray|bytes|complex|dict|file|float|frozenset|int"
@@ -96,22 +96,25 @@ add-highlighter shared/python/comment       fill comment
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=python %{
-        set-option window static_words '${values}:${meta}:${attributes}:${methods}:${exceptions}:${keywords}:${types}:${functions}'
-    }" | sed 's,|,:,g'
+        set-option window static_words ${values} ${meta} ${attributes} ${methods} ${exceptions} ${keywords} ${types} ${functions}
+    }" | tr '|' ' '
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/python/code regex '\b(${values})\b' 0:value
-        add-highlighter shared/python/code regex '\b(${meta})\b' 0:meta
-        add-highlighter shared/python/code regex '\b(${attribute})\b' 0:attribute
-        add-highlighter shared/python/code regex '\bdef\s+(${methods})\b' 1:function
-        add-highlighter shared/python/code regex '\b(${exceptions})\b' 0:function
-        add-highlighter shared/python/code regex '\b(${keywords})\b' 0:keyword
-        add-highlighter shared/python/code regex '\b(${functions})\b\(' 1:builtin
-        add-highlighter shared/python/code regex '\b(${types})\b' 0:type
-        add-highlighter shared/python/code regex '@[\w_]+\b' 0:attribute
+        add-highlighter shared/python/code/ regex '\b(${values})\b' 0:value
+        add-highlighter shared/python/code/ regex '\b(${meta})\b' 0:meta
+        add-highlighter shared/python/code/ regex '\b(${attribute})\b' 0:attribute
+        add-highlighter shared/python/code/ regex '\bdef\s+(${methods})\b' 1:function
+        add-highlighter shared/python/code/ regex '\b(${exceptions})\b' 0:function
+        add-highlighter shared/python/code/ regex '\b(${keywords})\b' 0:keyword
+        add-highlighter shared/python/code/ regex '\b(${functions})\b\(' 1:builtin
+        add-highlighter shared/python/code/ regex '\b(${types})\b' 0:type
+        add-highlighter shared/python/code/ regex '@[\w_]+\b' 0:attribute
     "
 }
+
+add-highlighter shared/python/code/ regex (?<=[\w\s\d'"_])(<=|<<|>>|>=|<>|<|>|!=|==|\||\^|&|\+|-|\*\*|\*|//|/|%|~) 0:operator
+add-highlighter shared/python/code/ regex (?<=[\w\s\d'"_])((?<![=<>!])=(?![=])|[+*-]=) 0:builtin
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -125,19 +128,19 @@ define-command -hidden python-indent-on-new-line %{
         # cleanup trailing whitespaces from previous line
         try %{ execute-keys -draft k <a-x> s \h+$ <ret> d }
         # indent after line ending with :
-        try %{ execute-keys -draft <space> k x <a-k> :$ <ret> j <a-gt> }
+        try %{ execute-keys -draft <space> k <a-x> <a-k> :$ <ret> j <a-gt> }
     }
 }
 
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group python-highlight global WinSetOption filetype=python %{ add-highlighter window ref python }
+hook -group python-highlight global WinSetOption filetype=python %{ add-highlighter window/python ref python }
 
 hook global WinSetOption filetype=python %{
     hook window InsertChar \n -group python-indent python-indent-on-new-line
     # cleanup trailing whitespaces on current line insert end
-    hook window InsertEnd .* -group python-indent %{ try %{ execute-keys -draft \; <a-x> s ^\h+$ <ret> d } }
+    hook window ModeChange insert:.* -group python-indent %{ try %{ execute-keys -draft \; <a-x> s ^\h+$ <ret> d } }
 }
 
 hook -group python-highlight global WinSetOption filetype=(?!python).* %{ remove-highlighter window/python }

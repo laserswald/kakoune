@@ -86,7 +86,7 @@ public:
     EventManager();
     ~EventManager();
 
-    void handle_next_events(EventMode mode, sigset_t* sigmask = nullptr);
+    bool handle_next_events(EventMode mode, sigset_t* sigmask = nullptr, bool block = true);
 
     // force the watchers associated with fd to be executed
     // on next handle_next_events call.
@@ -98,6 +98,7 @@ private:
     Vector<FDWatcher*, MemoryDomain::Events> m_fd_watchers;
     Vector<Timer*, MemoryDomain::Events>     m_timers;
     fd_set m_forced_fd;
+    bool   m_has_forced_fd = false;
 
     TimePoint m_last;
 };

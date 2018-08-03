@@ -1,5 +1,6 @@
 language: cpp
 
+dist: trusty
 sudo: false
 
 os:
@@ -19,9 +20,7 @@ before_install:
 
 install:
   - if [ $TRAVIS_OS_NAME = linux ]; then
-      if [ "$CXX" = "clang++" ]; then
-        export CXX=clang++-3.9;
-      elif [ "$CXX" = "g++" ]; then
+      if [ "$CXX" = "g++" ]; then
         export CXX=g++-5;
       fi;
     elif [ $TRAVIS_OS_NAME = osx ]; then
@@ -35,9 +34,7 @@ addons:
   apt:
     sources:
       - ubuntu-toolchain-r-test
-      - llvm-toolchain-precise-3.9
     packages:
-      - clang-3.9
       - libstdc++-5-dev
       - g++-5
       - libncursesw5-dev

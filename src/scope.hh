@@ -2,10 +2,11 @@
 #define scope_hh_INCLUDED
 
 #include "alias_registry.hh"
+#include "face_registry.hh"
+#include "highlighter_group.hh"
 #include "hook_manager.hh"
 #include "keymap_manager.hh"
 #include "option_manager.hh"
-#include "highlighter_group.hh"
 #include "utils.hh"
 
 namespace Kakoune
@@ -19,6 +20,7 @@ public:
           m_hooks(parent.hooks()),
           m_keymaps(parent.keymaps()),
           m_aliases(parent.aliases()),
+          m_faces(parent.faces()),
           m_highlighters(parent.highlighters()) {}
 
     OptionManager&       options()            { return m_options; }
@@ -29,6 +31,8 @@ public:
     const KeymapManager& keymaps()      const { return m_keymaps; }
     AliasRegistry&       aliases()            { return m_aliases; }
     const AliasRegistry& aliases()      const { return m_aliases; }
+    FaceRegistry&        faces()              { return m_faces; }
+    const FaceRegistry&  faces()        const { return m_faces; }
     Highlighters&        highlighters()       { return m_highlighters; }
     const Highlighters&  highlighters() const { return m_highlighters; }
 
@@ -40,17 +44,21 @@ private:
     HookManager   m_hooks;
     KeymapManager m_keymaps;
     AliasRegistry m_aliases;
+    FaceRegistry  m_faces;
     Highlighters  m_highlighters;
 };
 
-class GlobalScope : public Scope, public Singleton<GlobalScope>
+class GlobalScope : public Scope, public OptionManagerWatcher, public Singleton<GlobalScope>
 {
     public:
-        GlobalScope() : m_option_registry(m_options) {}
+        GlobalScope();
+        ~GlobalScope();
 
         OptionsRegistry& option_registry() { return m_option_registry; }
         const OptionsRegistry& option_registry() const { return m_option_registry; }
     private:
+        void on_option_changed(const Option& option);
+
         OptionsRegistry m_option_registry;
 };
 

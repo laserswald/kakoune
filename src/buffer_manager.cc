@@ -13,15 +13,15 @@ namespace Kakoune
 
 BufferManager::~BufferManager()
 {
-    // Move buffers to m_buffer_trash to avoid running BufClose
-    // hook while clearing m_buffers
-    m_buffer_trash = std::move(m_buffers);
+    // Move buffers to avoid running BufClose with buffers remaining in that list
+    BufferList buffers = std::move(m_buffers);
 
-    for (auto& buffer : m_buffer_trash)
+    for (auto& buffer : buffers)
         buffer->on_unregistered();
 
     // Make sure not clients exists
-    ClientManager::instance().clear();
+    if (ClientManager::has_instance())
+        ClientManager::instance().clear();
 }
 
 Buffer* BufferManager::create_buffer(String name, Buffer::Flags flags,
@@ -35,27 +35,26 @@ Buffer* BufferManager::create_buffer(String name, Buffer::Flags flags,
             throw runtime_error{"buffer name is already in use"};
     }
 
-    m_buffers.emplace(m_buffers.begin(),
-                      new Buffer{std::move(name), flags, data, fs_timestamp});
-    auto& buffer = *m_buffers.front();
-    buffer.on_registered();
+    m_buffers.push_back(std::make_unique<Buffer>(std::move(name), flags, data, fs_timestamp));
+    auto* buffer = m_buffers.back().get();
+    buffer->on_registered();
 
-    if (contains(m_buffer_trash, &buffer))
-        throw runtime_error{"Buffer got removed during its creation"};
+    if (contains(m_buffer_trash, buffer))
+        throw runtime_error{"buffer got removed during its creation"};
 
-    return &buffer;
+    return buffer;
 }
 
 void BufferManager::delete_buffer(Buffer& buffer)
 {
-    auto it = find_if(m_buffers, [&](const std::unique_ptr<Buffer>& p)
-                      { return p.get() == &buffer; });
+    auto it = find_if(m_buffers, [&](auto& p) { return p.get() == &buffer; });
     kak_assert(it != m_buffers.end());
 
     m_buffer_trash.emplace_back(std::move(*it));
     m_buffers.erase(it);
 
-    ClientManager::instance().ensure_no_client_uses_buffer(buffer);
+    if (ClientManager::has_instance())
+        ClientManager::instance().ensure_no_client_uses_buffer(buffer);
 
     buffer.on_unregistered();
 }
@@ -82,11 +81,10 @@ Buffer& BufferManager::get_buffer(StringView name)
 
 Buffer& BufferManager::get_first_buffer()
 {
-    if (not contains_that(m_buffers, [](const std::unique_ptr<Buffer>& p)
-                          { return not (p->flags() & Buffer::Flags::Debug); }))
+    if (all_of(m_buffers, [](auto& b) { return (b->flags() & Buffer::Flags::Debug); }))
         create_buffer("*scratch*", Buffer::Flags::None);
 
-    return *m_buffers.front();
+    return *m_buffers.back();
 }
 
 void BufferManager::backup_modified_buffers()
@@ -105,8 +103,11 @@ void BufferManager::clear_buffer_trash()
     {
         // Do that again, to be tolerant in some corner cases, where a buffer is
         // deleted during its creation
-        ClientManager::instance().ensure_no_client_uses_buffer(*buffer);
-        ClientManager::instance().clear_window_trash();
+        if (ClientManager::has_instance())
+        {
+            ClientManager::instance().ensure_no_client_uses_buffer(*buffer);
+            ClientManager::instance().clear_window_trash();
+        }
 
         buffer.reset();
     }

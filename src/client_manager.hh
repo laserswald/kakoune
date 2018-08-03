@@ -20,7 +20,7 @@ public:
     ~ClientManager();
 
     Client* create_client(std::unique_ptr<UserInterface>&& ui, int pid,
-                          EnvVarMap env_vars, StringView init_cmds,
+                          String name, EnvVarMap env_vars, StringView init_cmds,
                           Optional<BufferCoord> init_coord,
                           Client::OnExitCallback on_exit);
 
@@ -36,10 +36,11 @@ public:
 
     void redraw_clients() const;
     void process_pending_inputs() const;
+    bool has_pending_inputs() const;
 
     Client*  get_client_ifp(StringView name);
     Client&  get_client(StringView name);
-    bool validate_client_name(StringView name) const;
+    bool client_name_exists(StringView name) const;
     void remove_client(Client& client, bool graceful, int status);
 
     using ClientList = Vector<std::unique_ptr<Client>, MemoryDomain::Client>;

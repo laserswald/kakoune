@@ -11,55 +11,57 @@ hook global BufCreate (.*/)?(kakrc|.*.kak) %{
 # Highlighters & Completion
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code kakrc \
-    comment (^|\h)\K# $ '' \
-    double_string %{(^|\h)\K"} %{(?<!\\)(\\\\)*"} '' \
-    single_string %{(^|\h)\K'} %{(?<!\\)(\\\\)*'} '' \
-    shell '(^|\h)\K%sh\{' '\}' '\{' \
-    shell '(^|\h)\K%sh\(' '\)' '\(' \
-    shell '(^|\h)\K%sh\[' '\]' '\[' \
-    shell '(^|\h)\K%sh<'  '>'  '<' \
-    shell '(^|\h)\K-shell-(completion|candidates)\h+%\{' '\}' '\{' \
-    shell '(^|\h)\K-shell-(completion|candidates)\h+%\(' '\)' '\(' \
-    shell '(^|\h)\K-shell-(completion|candidates)\h+%\[' '\]' '\[' \
-    shell '(^|\h)\K-shell-(completion|candidates)\h+%<'  '>'  '<'
+add-highlighter shared/kakrc regions
+add-highlighter shared/kakrc/code default-region group
+add-highlighter shared/kakrc/comment region (^|\h)\K# $ fill comment
+add-highlighter shared/kakrc/double_string region -recurse %{(?<!")("")+(?!")} %{(^|\h)\K"} %{"(?!")} group
+add-highlighter shared/kakrc/single_string region -recurse %{(?<!')('')+(?!')} %{(^|\h)\K'} %{'(?!')} group
+add-highlighter shared/kakrc/shell1 region -recurse '\{' '(^|\h)\K%?%sh\{' '\}' ref sh
+add-highlighter shared/kakrc/shell2 region -recurse '\(' '(^|\h)\K%?%sh\(' '\)' ref sh
+add-highlighter shared/kakrc/shell3 region -recurse '\[' '(^|\h)\K%?%sh\[' '\]' ref sh
+add-highlighter shared/kakrc/shell4 region -recurse '<'  '(^|\h)\K%?%sh<'  '>'  ref sh
+add-highlighter shared/kakrc/shell5 region -recurse '\{' '(^|\h)\K-shell-(completion|candidates)\h+%\{' '\}' ref sh
+add-highlighter shared/kakrc/shell6 region -recurse '\(' '(^|\h)\K-shell-(completion|candidates)\h+%\(' '\)' ref sh
+add-highlighter shared/kakrc/shell7 region -recurse '\[' '(^|\h)\K-shell-(completion|candidates)\h+%\[' '\]' ref sh
+add-highlighter shared/kakrc/shell8 region -recurse '<'  '(^|\h)\K-shell-(completion|candidates)\h+%<'  '>'  ref sh
 
-%sh{
+evaluate-commands %sh{
     # Grammar
     keywords="edit write write-all kill quit write-quit write-all-quit map unmap alias unalias
               buffer buffer-next buffer-previous delete-buffer add-highlighter remove-highlighter
-              hook remove-hooks define-command echo debug source try fail
+              hook remove-hooks define-command echo debug source try fail nop
               set-option unset-option update-option declare-option execute-keys evaluate-commands
-              prompt menu on-key info set-face rename-client set-register select change-directory
-              rename-session colorscheme"
+              prompt menu on-key info set-face unset-face rename-client set-register select
+              change-directory rename-session colorscheme declare-user-mode enter-user-mode"
     attributes="global buffer window current
                 normal insert menu prompt goto view user object
-                number_lines show_matching show_whitespaces fill regex dynregex group flag_lines
-                ranges line column wrap ref regions replace-ranges"
+                number-lines show-matching show-whitespaces fill regex dynregex group flag-lines
+                ranges line column wrap ref regions region default-region replace-ranges"
     types="int bool str regex int-list str-list completions line-specs range-specs"
-    values="default black red green yellow blue magenta cyan white"
+    values="default black red green yellow blue magenta cyan white yes no false true"
 
-    join() { printf "%s" "$1" | tr -s ' \n' "$2"; }
+    join() { sep=$2; eval set -- $1; IFS="$sep"; echo "$*"; }
 
     # Add the language's grammar to the static completion list
     printf '%s\n' "hook global WinSetOption filetype=kak %{
-        set-option window static_words '$(join "${keywords}:${attributes}:${types}:${values}" ':')'
+        set-option window static_words $(join "${keywords} ${attributes} ${types} ${values}" ' ')'
         set-option -- window extra_word_chars '-'
     }"
 
     # Highlight keywords (which are always surrounded by whitespace)
-    printf '%s\n' "add-highlighter shared/kakrc/code regex (?:\s|\A)\K($(join "${keywords}" '|'))(?:(?=\s)|\z) 0:keyword
-                   add-highlighter shared/kakrc/code regex (?:\s|\A)\K($(join "${attributes}" '|'))(?:(?=\s)|\z) 0:attribute
-                   add-highlighter shared/kakrc/code regex (?:\s|\A)\K($(join "${types}" '|'))(?:(?=\s)|\z) 0:type
-                   add-highlighter shared/kakrc/code regex (?:\s|\A)\K($(join "${values}" '|'))(?:(?=\s)|\z) 0:value"
+    printf '%s\n' "add-highlighter shared/kakrc/code/keywords regex (?:\s|\A)\K($(join "${keywords}" '|'))(?:(?=\s)|\z) 0:keyword
+                   add-highlighter shared/kakrc/code/attributes regex (?:\s|\A)\K($(join "${attributes}" '|'))(?:(?=\s)|\z) 0:attribute
+                   add-highlighter shared/kakrc/code/types regex (?:\s|\A)\K($(join "${types}" '|'))(?:(?=\s)|\z) 0:type
+                   add-highlighter shared/kakrc/code/values regex (?:\s|\A)\K($(join "${values}" '|'))(?:(?=\s)|\z) 0:value"
 }
 
-add-highlighter shared/kakrc/code regex \brgb:[0-9a-fA-F]{6}\b 0:value
+add-highlighter shared/kakrc/code/colors regex \brgb:[0-9a-fA-F]{6}\b 0:value
+add-highlighter shared/kakrc/code/scopes regex \b(global|shared|buffer|window)(?:\b|/) 0:value
 
-add-highlighter shared/kakrc/double_string fill string
-add-highlighter shared/kakrc/single_string fill string
-add-highlighter shared/kakrc/comment fill comment
-add-highlighter shared/kakrc/shell ref sh
+add-highlighter shared/kakrc/double_string/fill fill string
+add-highlighter shared/kakrc/double_string/escape regex '""' 0:default+b
+add-highlighter shared/kakrc/single_string/fill fill string
+add-highlighter shared/kakrc/single_string/escape regex "''" 0:default+b
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -80,12 +82,12 @@ define-command -hidden kak-indent-on-new-line %{
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group kak-highlight global WinSetOption filetype=kak %{ add-highlighter window ref kakrc }
+hook -group kak-highlight global WinSetOption filetype=kak %{ add-highlighter window/kakrc ref kakrc }
 
 hook global WinSetOption filetype=kak %{
     hook window InsertChar \n -group kak-indent kak-indent-on-new-line
     # cleanup trailing whitespaces on current line insert end
-    hook window InsertEnd .* -group kak-indent %{ try %{ execute-keys -draft \; <a-x> s ^\h+$ <ret> d } }
+    hook window ModeChange insert:.* -group kak-indent %{ try %{ execute-keys -draft \; <a-x> s ^\h+$ <ret> d } }
     set-option buffer extra_word_chars '-'
 }
 

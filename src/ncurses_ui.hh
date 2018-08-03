@@ -24,6 +24,8 @@ public:
     NCursesUI(const NCursesUI&) = delete;
     NCursesUI& operator=(const NCursesUI&) = delete;
 
+    bool is_ok() const override { return m_window != nullptr; }
+
     void draw(const DisplayBuffer& display_buffer,
               const Face& default_face,
               const Face& padding_face) override;
@@ -58,9 +60,6 @@ public:
         DisplayCoord pos;
         DisplayCoord size;
     };
-
-protected:
-    void on_sighup();
 
 private:
     void check_resize(bool force = false);
@@ -107,11 +106,13 @@ private:
         DisplayCoord anchor;
         MenuStyle style;
         int selected_item = 0;
+        int first_item = 0;
         int columns = 1;
-        LineCount top_line = 0;
     } m_menu;
 
     void draw_menu();
+
+    LineCount content_line_offset() const;
 
     struct Info : Window
     {
@@ -140,10 +141,18 @@ private:
     int m_wheel_up_button = 4;
     int m_wheel_down_button = 5;
 
+    static constexpr int default_shift_function_key = 12;
+    int m_shift_function_key = default_shift_function_key;
+
     bool m_set_title = true;
     bool m_change_colors = true;
 
     bool m_dirty = false;
+
+    bool m_resize_pending = false;
+    void set_resize_pending();
+
+    ColumnCount m_status_len = 0;
 };
 
 }

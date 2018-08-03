@@ -18,11 +18,10 @@ class UserInterface;
 class String;
 struct Key;
 
-enum class EventMode;
 enum class InfoStyle;
 enum class MenuStyle;
 
-class Client : public SafeCountable, public OptionManagerWatcher
+class Client final : public SafeCountable, public OptionManagerWatcher
 {
 public:
     using OnExitCallback = std::function<void (int status)>;
@@ -37,7 +36,10 @@ public:
 
     Client(Client&&) = delete;
 
+    bool is_ui_ok() const;
+
     bool process_pending_inputs();
+    bool has_pending_inputs() const { return not m_pending_keys.empty(); }
 
     void menu_show(Vector<DisplayLine> choices, BufferCoord anchor, MenuStyle style);
     void menu_select(int selected);
@@ -46,7 +48,8 @@ public:
     void info_show(String title, String content, BufferCoord anchor, InfoStyle style);
     void info_hide(bool even_modal = false);
 
-    void print_status(DisplayLine status_line, bool immediate = false);
+    void print_status(DisplayLine status_line);
+    const DisplayLine& current_status() { return m_status_line; }
 
     DisplayCoord dimensions() const;
 
@@ -78,8 +81,6 @@ private:
     void on_buffer_reload_key(Key key);
     void close_buffer_reload_dialog();
     void reload_buffer();
-
-    Optional<Key> get_next_key(EventMode mode);
 
     DisplayLine generate_mode_line() const;
 

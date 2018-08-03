@@ -38,6 +38,19 @@ String join(const Container& container, char joiner, bool esc_joiner = true)
     return res;
 }
 
+template<typename Container>
+String join(const Container& container, StringView joiner)
+{
+    String res;
+    for (const auto& str : container)
+    {
+        if (not res.empty())
+            res += joiner;
+        res += str;
+    }
+    return res;
+}
+
 inline bool prefix_match(StringView str, StringView prefix)
 {
     return str.substr(0_byte, prefix.length()) == prefix;
@@ -53,7 +66,7 @@ int str_to_int(StringView str); // throws on error
 Optional<int> str_to_int_ifp(StringView str);
 
 inline String option_to_string(StringView opt) { return opt.str(); }
-inline void option_from_string(StringView str, String& opt) { opt = str.str(); }
+inline String option_from_string(Meta::Type<String>, StringView str) { return str.str(); }
 inline bool option_add(String& opt, StringView val) { opt += val; return not val.empty(); }
 
 template<size_t N>
@@ -72,8 +85,9 @@ struct Hex { size_t val; };
 constexpr Hex hex(size_t val) { return {val}; }
 
 InplaceString<15> to_string(int val);
+InplaceString<15> to_string(unsigned val);
 InplaceString<23> to_string(long int val);
-InplaceString<23> to_string(size_t val);
+InplaceString<23> to_string(unsigned long val);
 InplaceString<23> to_string(long long int val);
 InplaceString<23> to_string(Hex val);
 InplaceString<23> to_string(float val);
@@ -112,6 +126,13 @@ template<typename... Types>
 StringView format_to(ArrayView<char> buffer, StringView fmt, Types&&... params)
 {
     return format_to(buffer, fmt, ArrayView<const StringView>{detail::format_param(std::forward<Types>(params))...});
+}
+
+String double_up(StringView s, StringView characters);
+
+inline String quote(StringView s)
+{
+    return format("'{}'", double_up(s, "'"));
 }
 
 }

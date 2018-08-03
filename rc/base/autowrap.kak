@@ -21,7 +21,7 @@ define-command -hidden autowrap-cursor %{ evaluate-commands -save-regs '/"|^@m' 
         } catch %{
             ## if we're adding characters in the middle of a sentence, use
             ## the `fmtcmd` command to wrap the entire paragraph
-            %sh{
+            evaluate-commands %sh{
                 if [ "${kak_opt_autowrap_format_paragraph}" = true ] \
                     && [ -n "${kak_opt_autowrap_fmtcmd}" ]; then
                     format_cmd=$(printf %s "${kak_opt_autowrap_fmtcmd}" \
@@ -31,7 +31,7 @@ define-command -hidden autowrap-cursor %{ evaluate-commands -save-regs '/"|^@m' 
                             execute-keys '<a-]>p<a-x><a-j>|${format_cmd}<ret>'
                             try %{ execute-keys s\h+$<ret> d }
                         }
-                        select '${kak_reg_m}'
+                        select '${kak_main_reg_m}'
                     "
                 fi
             }

@@ -13,7 +13,7 @@ namespace Kakoune
 {
 
 // A Window is a view onto a Buffer
-class Window : public SafeCountable, public OptionManagerWatcher, public Scope
+class Window final : public SafeCountable, public Scope, private OptionManagerWatcher
 {
 public:
     Window(Buffer& buffer);
@@ -21,8 +21,6 @@ public:
 
     const DisplayCoord& position() const { return m_position; }
     void set_position(DisplayCoord position);
-
-    const DisplayCoord& range() const { return m_range; }
 
     const DisplayCoord& dimensions() const { return m_dimensions; }
     void set_dimensions(DisplayCoord dimensions);
@@ -52,7 +50,7 @@ private:
     Window(const Window&) = delete;
 
     void on_option_changed(const Option& option) override;
-    DisplaySetup compute_display_setup(const Context& context);
+    DisplaySetup compute_display_setup(const Context& context) const;
 
     void run_hook_in_own_context(StringView hook_name, StringView param,
                                  String client_name = "");
@@ -61,7 +59,6 @@ private:
     SafePtr<Client> m_client;
 
     DisplayCoord m_position;
-    DisplayCoord m_range;
     DisplayCoord m_dimensions;
     DisplayBuffer m_display_buffer;
 
@@ -72,6 +69,7 @@ private:
         DisplayCoord position;
         DisplayCoord dimensions;
         size_t timestamp;
+        size_t faces_hash;
         size_t main_selection;
         Vector<BufferRange, MemoryDomain::Display> selections;
     };

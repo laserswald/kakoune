@@ -7,7 +7,7 @@ declare-option -hidden int grep_current_line 0
 define-command -params .. -file-completion \
     -docstring %{grep [<arguments>]: grep utility wrapper
 All the optional arguments are forwarded to the grep utility} \
-    grep %{ %sh{
+    grep %{ evaluate-commands %sh{
      output=$(mktemp -d "${TMPDIR:-/tmp}"/kak-grep.XXXXXXXX)/fifo
      mkfifo ${output}
      if [ $# -gt 0 ]; then
@@ -20,7 +20,7 @@ All the optional arguments are forwarded to the grep utility} \
                edit! -fifo ${output} -scroll *grep*
                set-option buffer filetype grep
                set-option buffer grep_current_line 0
-               hook -group fifo buffer BufCloseFifo .* %{
+               hook -always -group fifo buffer BufCloseFifo .* %{
                    nop %sh{ rm -r $(dirname ${output}) }
                    remove-hooks buffer fifo
                }
@@ -28,9 +28,9 @@ All the optional arguments are forwarded to the grep utility} \
 }}
 
 hook -group grep-highlight global WinSetOption filetype=grep %{
-    add-highlighter window group grep
-    add-highlighter window/grep regex "^((?:\w:)?[^:]+):(\d+):(\d+)?" 1:cyan 2:green 3:green
-    add-highlighter window/grep line %{%opt{grep_current_line}} default+b
+    add-highlighter window/grep group
+    add-highlighter window/grep/ regex "^((?:\w:)?[^:\n]+):(\d+):(\d+)?" 1:cyan 2:green 3:green
+    add-highlighter window/grep/ line %{%opt{grep_current_line}} default+b
 }
 
 hook global WinSetOption filetype=grep %{
@@ -47,7 +47,7 @@ declare-option -docstring "name of the client in which all source code jumps wil
     str jumpclient
 
 define-command -hidden grep-jump %{
-    evaluate-commands -collapse-jumps %{
+    evaluate-commands %{ # use evaluate-commands to ensure jumps are collapsed
         try %{
             execute-keys '<a-x>s^((?:\w:)?[^:]+):(\d+):(\d+)?<ret>'
             set-option buffer grep_current_line %val{cursor_line}
@@ -58,7 +58,7 @@ define-command -hidden grep-jump %{
 }
 
 define-command grep-next-match -docstring 'Jump to the next grep match' %{
-    evaluate-commands -collapse-jumps -try-client %opt{jumpclient} %{
+    evaluate-commands -try-client %opt{jumpclient} %{
         buffer '*grep*'
         # First jump to enf of buffer so that if grep_current_line == 0
         # 0g<a-l> will be a no-op and we'll jump to the first result.
@@ -70,7 +70,7 @@ define-command grep-next-match -docstring 'Jump to the next grep match' %{
 }
 
 define-command grep-previous-match -docstring 'Jump to the previous grep match' %{
-    evaluate-commands -collapse-jumps -try-client %opt{jumpclient} %{
+    evaluate-commands -try-client %opt{jumpclient} %{
         buffer '*grep*'
         # See comment in grep-next-match
         execute-keys "ge %opt{grep_current_line}g<a-h> <a-/>^[^:]+:\d+:<ret>"

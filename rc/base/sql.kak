@@ -11,14 +11,15 @@ hook global BufCreate .*/?(?i)sql %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code sql \
-    string '"' (?<!\\)(\\\\)*" '' \
-    string "'" (?<!\\)(\\\\)*' '' \
-    comment '--' '$' '' \
-    comment '#' '$' '' \
-    comment '/\*' '\*/' ''
+add-highlighter shared/sql regions
+add-highlighter shared/sql/code default-region group
+add-highlighter shared/sql/double_string region '"' (?<!\\)(\\\\)*" fill string
+add-highlighter shared/sql/single_string region "'" (?<!\\)(\\\\)*' fill string
+add-highlighter shared/sql/comment1 region '--' '$' fill comment
+add-highlighter shared/sql/comment2 region '#' '$' fill comment
+add-highlighter shared/sql/comment3 region '/\*' '\*/' fill comment
 
-%sh{
+evaluate-commands %sh{
     # Keywords
     keywords="ALTER|AS|ASC|AUTO_INCREMENT|CHECK|CONSTRAINT|CREATE|DATABASE|DEFAULT|DELETE|DESC|DISTINCT|DROP"
     keywords="${keywords}|EXISTS|FOREIGN KEY|FROM|FULL JOIN|FULL OUTER JOIN|GROUP BY|HAVING|INDEX|INNER JOIN"
@@ -80,30 +81,28 @@ add-highlighter shared/ regions -default code sql \
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=sql %{
-        set-option window static_words '${keywords}:${operators}:${functions}:${data_types}:${data_types_fn}:NULL'
-    }" | sed 's,|,:,g'
+        set-option window static_words ${keywords} ${operators} ${functions} ${data_types} ${data_types_fn} NULL
+    }" | tr '|' ' '
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/sql/code regex '\b(${functions})\(.*\)' 0:function
-        add-highlighter shared/sql/code regex '\b(${data_types_fn})\(.*?\)' 0:type
-        add-highlighter shared/sql/code regex '\b(${keywords})\b' 0:keyword
-        add-highlighter shared/sql/code regex '\b(${operators})\b' 0:operator
-        add-highlighter shared/sql/code regex '\b(${data_types})\b' 0:type
+        add-highlighter shared/sql/code/ regex '(?i)\b(${functions})\(.*\)' 0:function
+        add-highlighter shared/sql/code/ regex '(?i)\b(${data_types_fn})\(.*?\)' 0:type
+        add-highlighter shared/sql/code/ regex '(?i)\b(${keywords})\b' 0:keyword
+        add-highlighter shared/sql/code/ regex '(?i)\b(${operators})\b' 0:operator
+        add-highlighter shared/sql/code/ regex '(?i)\b(${data_types})\b' 0:type
     "
 }
 
-add-highlighter shared/sql/code regex '\+|-|\*|/|%|&|\||^|=|>|<|>=|<=|<>|\+=|-=|\*=|/=|%=|&=|^-=|\|\*=' 0:operator
-add-highlighter shared/sql/code regex \bNULL\b 0:value
-add-highlighter shared/sql/code regex \b\d+(?:\.\d+)?\b 0:value
-add-highlighter shared/sql/string fill string
-add-highlighter shared/sql/comment fill comment
+add-highlighter shared/sql/code/ regex '\+|-|\*|/|%|&|\||^|=|>|<|>=|<=|<>|\+=|-=|\*=|/=|%=|&=|^-=|\|\*=' 0:operator
+add-highlighter shared/sql/code/ regex \bNULL\b 0:value
+add-highlighter shared/sql/code/ regex \b\d+(?:\.\d+)?\b 0:value
 
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
 hook -group sql-highlight global WinSetOption filetype=sql %{
-    add-highlighter window ref sql
+    add-highlighter window/sql ref sql
 }
 
 hook -group sql-highlight global WinSetOption filetype=(?!sql).* %{

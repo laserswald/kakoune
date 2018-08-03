@@ -3,6 +3,7 @@
 #include "assert.hh"
 #include "buffer.hh"
 #include "buffer_utils.hh"
+#include "face_registry.hh"
 #include "utf8.hh"
 
 #include "face_registry.hh"
@@ -105,7 +106,7 @@ DisplayLine::iterator DisplayLine::split(iterator it, ColumnCount count)
         return m_atoms.insert(it, std::move(atom));
     }
     auto pos = utf8::advance(get_iterator(it->buffer(), it->begin()),
-                             get_iterator(it->buffer(), it->end()), 
+                             get_iterator(it->buffer(), it->end()),
                              count).coord();
     return split(it, pos);
 }
@@ -241,7 +242,7 @@ void DisplayBuffer::optimize()
         line.optimize();
 }
 
-DisplayLine parse_display_line(StringView line, const HashMap<String, DisplayLine>& builtins)
+DisplayLine parse_display_line(StringView line, const FaceRegistry& faces, const HashMap<String, DisplayLine>& builtins)
 {
     DisplayLine res;
     bool was_antislash = false;
@@ -278,7 +279,7 @@ DisplayLine parse_display_line(StringView line, const HashMap<String, DisplayLin
                     ++closing;
                 }
                 else
-                    face = get_face({it+1, closing});
+                    face = faces[{it+1, closing}];
                 it = closing;
                 pos = closing + 1;
             }

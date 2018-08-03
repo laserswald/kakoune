@@ -21,7 +21,7 @@ public:
     HighlighterGroup(HighlightPass passes) : Highlighter{passes} {}
 
     bool has_children() const override { return true; }
-    void add_child(HighlighterAndId&& hl) override;
+    void add_child(String name, std::unique_ptr<Highlighter>&& hl) override;
     void remove_child(StringView id) override;
 
     Highlighter& get_child(StringView path) override;
@@ -32,7 +32,7 @@ public:
 
 protected:
     void do_highlight(HighlightContext context, DisplayBuffer& display_buffer, BufferRange range) override;
-    void do_compute_display_setup(HighlightContext context, DisplaySetup& setup) override;
+    void do_compute_display_setup(HighlightContext context, DisplaySetup& setup) const override;
 
     using HighlighterMap = HashMap<String, std::unique_ptr<Highlighter>, MemoryDomain::Highlight>;
     HighlighterMap m_highlighters;
@@ -47,7 +47,7 @@ public:
     const HighlighterGroup& group() const { return m_group; }
 
     void highlight(HighlightContext context, DisplayBuffer& display_buffer, BufferRange range);
-    void compute_display_setup(HighlightContext context, DisplaySetup& setup);
+    void compute_display_setup(HighlightContext context, DisplaySetup& setup) const;
 
 private:
     friend class Scope;

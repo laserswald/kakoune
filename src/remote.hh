@@ -30,10 +30,11 @@ using RemoteBuffer = Vector<char, MemoryDomain::Remote>;
 class RemoteClient
 {
 public:
-    RemoteClient(StringView session, std::unique_ptr<UserInterface>&& ui,
+    RemoteClient(StringView session, StringView name, std::unique_ptr<UserInterface>&& ui,
                  int pid, const EnvVarMap& env_vars, StringView init_command,
                  Optional<BufferCoord> init_coord);
 
+    bool is_ui_ok() const;
     const Optional<int>& exit_status() const { return m_exit_status; }
 private:
     std::unique_ptr<UserInterface> m_ui;

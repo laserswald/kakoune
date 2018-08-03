@@ -65,6 +65,10 @@ inline bool overlaps(const Selection& lhs, const Selection& rhs)
 void update_selections(Vector<Selection>& selections, size_t& main,
                        Buffer& buffer, size_t timestamp);
 
+void sort_selections(Vector<Selection>& selections, size_t& main);
+void merge_overlapping_selections(Vector<Selection>& selections, size_t& main);
+void clamp_selections(Vector<Selection>& sel, const Buffer& buffer);
+
 enum class InsertMode : unsigned
 {
     Insert,
@@ -87,6 +91,9 @@ struct SelectionList
     SelectionList(Buffer& buffer, Vector<Selection> s);
     SelectionList(Buffer& buffer, Vector<Selection> s, size_t timestamp);
 
+    struct UnsortedTag {};
+    SelectionList(UnsortedTag, Buffer& buffer, Vector<Selection> s, size_t timestamp, size_t main);
+
     void update();
 
     void check_invariant() const;
@@ -95,8 +102,6 @@ struct SelectionList
     Selection& main() { return (*this)[m_main]; }
     size_t main_index() const { return m_main; }
     void set_main_index(size_t main) { kak_assert(main < size()); m_main = main; }
-
-    void avoid_eol();
 
     void push_back(const Selection& sel) { m_selections.push_back(sel); }
     void push_back(Selection&& sel) { m_selections.push_back(std::move(sel)); }
@@ -135,7 +140,6 @@ struct SelectionList
     Buffer& buffer() const { return *m_buffer; }
 
     size_t timestamp() const { return m_timestamp; }
-    void update_timestamp() { m_timestamp = m_buffer->timestamp(); }
 
     void insert(ConstArrayView<String> strings, InsertMode mode,
                 Vector<BufferCoord>* out_insert_pos = nullptr);
@@ -154,7 +158,7 @@ Vector<Selection> compute_modified_ranges(Buffer& buffer, size_t timestamp);
 String selection_to_string(const Selection& selection);
 String selection_list_to_string(const SelectionList& selection);
 Selection selection_from_string(StringView desc);
-SelectionList selection_list_from_string(Buffer& buffer, StringView desc);
+SelectionList selection_list_from_string(Buffer& buffer, ConstArrayView<String> descs);
 
 }
 

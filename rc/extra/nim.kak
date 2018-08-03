@@ -11,19 +11,17 @@ hook global BufCreate .*\.nim(s|ble)? %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code nim \
-    double_string '"' (?<!\\)(\\\\)*" '' \
-    double_string '"""' '"""' '' \
-    comment '#?#\[' '\]##?' ''
+add-highlighter shared/nim regions
+add-highlighter shared/nim/code default-region group
+add-highlighter shared/nim/double_string region '"' (?<!\\)(\\\\)*" fill string
+add-highlighter shared/nim/triple_string region '"""' '"""' fill string
+add-highlighter shared/nim/comment region '#?#\[' '\]##?' fill comment
 
-add-highlighter shared/nim/double_string fill string
-add-highlighter shared/nim/comment fill comment
+add-highlighter shared/nim/code/ regex \b(0[xXocCbB])?[\d_]+('[iIuUfFdD](8|16|32|64|128))?\b 0:value
+add-highlighter shared/nim/code/ regex \b\d+\.\d+\b 0:value
+add-highlighter shared/nim/code/ regex %{'[^'\n]'} 0:string
 
-add-highlighter shared/nim/code regex \b(0[xXocCbB])?[\d_]+('[iIuUfFdD](8|16|32|64|128))?\b 0:value
-add-highlighter shared/nim/code regex \b\d+\.\d+\b 0:value
-add-highlighter shared/nim/code regex %{'[^'\n]'} 0:string
-
-%sh{
+evaluate-commands %sh{
     # Grammar
     keywords="addr|and|as|asm|atomic|bind|block|break|case|cast|concept|const"
     keywords="${keywords}|continue|converter|defer|discard|distinct|div|do|elif"
@@ -40,18 +38,18 @@ add-highlighter shared/nim/code regex %{'[^'\n]'} 0:string
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=nim %{
-        set-option window static_words '${keywords}:${types}:${values}'
-    }" | sed 's,|,:,g'
+        set-option window static_words ${keywords} ${types} ${values}
+    }" | tr '|' ' '
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/nim/code regex \b(${keywords})\b 0:keyword
-        add-highlighter shared/nim/code regex \b(${types})\b 0:type
-        add-highlighter shared/nim/code regex \b(${values})\b 0:value
+        add-highlighter shared/nim/code/ regex \b(${keywords})\b 0:keyword
+        add-highlighter shared/nim/code/ regex \b(${types})\b 0:type
+        add-highlighter shared/nim/code/ regex \b(${values})\b 0:value
     "
 }
 
-add-highlighter shared/nim/code regex '#[^\n]+' 0:comment
+add-highlighter shared/nim/code/ regex '#[^\n]+' 0:comment
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -72,12 +70,12 @@ def -hidden nim-indent-on-new-line %{
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group nim-highlight global WinSetOption filetype=nim %{ add-highlighter window ref nim }
+hook -group nim-highlight global WinSetOption filetype=nim %{ add-highlighter window/nim ref nim }
 
 hook global WinSetOption filetype=nim %{
     hook window InsertChar \n -group nim-indent nim-indent-on-new-line
     # cleanup trailing whitespaces on current line insert end
-    hook window InsertEnd .* -group nim-indent %{ try %{ exec -draft \; <a-x> s ^\h+$ <ret> d } }
+    hook window ModeChange insert:.* -group nim-indent %{ try %{ exec -draft \; <a-x> s ^\h+$ <ret> d } }
 }
 
 hook -group nim-highlight global WinSetOption filetype=(?!nim).* %{ remove-highlighter window/nim }

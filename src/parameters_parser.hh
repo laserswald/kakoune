@@ -6,6 +6,7 @@
 #include "meta.hh"
 #include "array_view.hh"
 #include "optional.hh"
+#include "flags.hh"
 #include "string.hh"
 #include "string_utils.hh"
 
@@ -51,8 +52,9 @@ struct ParameterDesc
     enum class Flags
     {
         None = 0,
-        SwitchesOnlyAtStart = 1,
-        SwitchesAsPositional = 2,
+        SwitchesOnlyAtStart   = 0b0001,
+        SwitchesAsPositional  = 0b0010,
+        IgnoreUnknownSwitches = 0b0100
     };
     friend constexpr bool with_bit_ops(Meta::Type<Flags>) { return true; }
 
@@ -113,6 +115,12 @@ struct ParametersParser
     {
         kak_assert(index < positional_count());
         return m_params[m_positional_indices[index]];
+    }
+
+    ConstArrayView<String> positionals_from(size_t first) const
+    {
+        kak_assert(m_desc.flags & (ParameterDesc::Flags::SwitchesOnlyAtStart | ParameterDesc::Flags::SwitchesAsPositional));
+        return m_params.subrange(first < m_positional_indices.size() ? m_positional_indices[first] : -1);
     }
 
     iterator begin() const { return iterator(*this, 0); }

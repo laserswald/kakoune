@@ -69,7 +69,7 @@ EventManager::~EventManager()
     kak_assert(m_timers.empty());
 }
 
-void EventManager::handle_next_events(EventMode mode, sigset_t* sigmask)
+bool EventManager::handle_next_events(EventMode mode, sigset_t* sigmask, bool block)
 {
     int max_fd = 0;
     fd_set rfds, wfds, efds;
@@ -91,8 +91,11 @@ void EventManager::handle_next_events(EventMode mode, sigset_t* sigmask)
     }
 
     bool with_timeout = false;
+    if (m_has_forced_fd)
+        block = false;
+
     timespec ts{};
-    if (not m_timers.empty())
+    if (block and not m_timers.empty())
     {
         auto next_date = (*std::min_element(
             m_timers.begin(), m_timers.end(), [](Timer* lhs, Timer* rhs) {
@@ -109,10 +112,11 @@ void EventManager::handle_next_events(EventMode mode, sigset_t* sigmask)
         }
     }
     int res = pselect(max_fd + 1, &rfds, &wfds, &efds,
-                      with_timeout ? &ts : nullptr, sigmask);
+                      not block or with_timeout ? &ts : nullptr, sigmask);
 
     // copy forced fds *after* select, so that signal handlers can write to
     // m_forced_fd, interupt select, and directly be serviced.
+    m_has_forced_fd = false;
     fd_set forced = m_forced_fd;
     FD_ZERO(&m_forced_fd);
 
@@ -140,11 +144,14 @@ void EventManager::handle_next_events(EventMode mode, sigset_t* sigmask)
         if (contains(m_timers, timer) and timer->next_date() <= now)
             timer->run(mode);
     }
+
+    return res > 0;
 }
 
 void EventManager::force_signal(int fd)
 {
     FD_SET(fd, &m_forced_fd);
+    m_has_forced_fd = true;
 }
 
 SignalHandler set_signal_handler(int signum, SignalHandler handler)

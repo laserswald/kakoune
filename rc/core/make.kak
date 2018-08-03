@@ -10,7 +10,7 @@ declare-option -hidden int make_current_error_line
 define-command -params .. \
     -docstring %{make [<arguments>]: make utility wrapper
 All the optional arguments are forwarded to the make utility} \
-    make %{ %sh{
+    make %{ evaluate-commands %sh{
      output=$(mktemp -d "${TMPDIR:-/tmp}"/kak-make.XXXXXXXX)/fifo
      mkfifo ${output}
      ( eval ${kak_opt_makecmd} "$@" > ${output} 2>&1 ) > /dev/null 2>&1 < /dev/null &
@@ -19,19 +19,19 @@ All the optional arguments are forwarded to the make utility} \
                edit! -fifo ${output} -scroll *make*
                set-option buffer filetype make
                set-option buffer make_current_error_line 0
-               hook -group fifo buffer BufCloseFifo .* %{
+               hook -always -group fifo buffer BufCloseFifo .* %{
                    nop %sh{ rm -r $(dirname ${output}) }
                    remove-hooks buffer fifo
                }
            }"
 }}
 
-add-highlighter shared/ group make
-add-highlighter shared/make regex "^((?:\w:)?[^:\n]+):(\d+):(?:(\d+):)?\h+(?:((?:fatal )?error)|(warning)|(note)|(required from(?: here)?))?.*?$" 1:cyan 2:green 3:green 4:red 5:yellow 6:blue 7:yellow
-add-highlighter shared/make regex "^\h*(~*(?:(\^)~*)?)$" 1:green 2:cyan+b
-add-highlighter shared/make line '%opt{make_current_error_line}' default+b
+add-highlighter shared/make group
+add-highlighter shared/make/ regex "^((?:\w:)?[^:\n]+):(\d+):(?:(\d+):)?\h+(?:((?:fatal )?error)|(warning)|(note)|(required from(?: here)?))?.*?$" 1:cyan 2:green 3:green 4:red 5:yellow 6:blue 7:yellow
+add-highlighter shared/make/ regex "^\h*(~*(?:(\^)~*)?)$" 1:green 2:cyan+b
+add-highlighter shared/make/ line '%opt{make_current_error_line}' default+b
 
-hook -group make-highlight global WinSetOption filetype=make %{ add-highlighter window ref make }
+hook -group make-highlight global WinSetOption filetype=make %{ add-highlighter window/make ref make }
 
 hook global WinSetOption filetype=make %{
     hook buffer -group make-hooks NormalKey <ret> make-jump
@@ -46,24 +46,32 @@ hook global WinSetOption filetype=(?!make).* %{
 declare-option -docstring "name of the client in which all source code jumps will be executed" \
     str jumpclient
 
+define-command -hidden make-open-error -params 4 %{
+    evaluate-commands -try-client %opt{jumpclient} %{
+        edit -existing "%arg{1}" %arg{2} %arg{3}
+        echo -markup "{Information}%arg{4}"
+        try %{ focus }
+    }
+}
+
 define-command -hidden make-jump %{
-    evaluate-commands -collapse-jumps %{
+    evaluate-commands %{
         try %{
             execute-keys gl<a-?> "Entering directory" <ret><a-:>
             # Try to parse the error into capture groups, failing on absolute paths
-            execute-keys s "Entering directory '([^']+)'.*\n([^:/][^:]*):(\d+):(?:(\d+):)?([^\n]+)\z" <ret>l
+            execute-keys s "Entering directory [`']([^']+)'.*\n([^:/][^:]*):(\d+):(?:(\d+):)?([^\n]+)\z" <ret>l
             set-option buffer make_current_error_line %val{cursor_line}
-            evaluate-commands -try-client %opt{jumpclient} "edit -existing %reg{1}/%reg{2} %reg{3} %reg{4}; echo -markup %{{Information}%reg{5}}; try %{ focus }"
+            make-open-error "%reg{1}/%reg{2}" "%reg{3}" "%reg{4}" "%reg{5}"
         } catch %{
             execute-keys <a-h><a-l> s "((?:\w:)?[^:]+):(\d+):(?:(\d+):)?([^\n]+)\z" <ret>l
             set-option buffer make_current_error_line %val{cursor_line}
-            evaluate-commands -try-client %opt{jumpclient} "edit -existing %reg{1} %reg{2} %reg{3}; echo -markup %{{Information}%reg{4}}; try %{ focus }"
+            make-open-error "%reg{1}" "%reg{2}" "%reg{3}" "%reg{4}"
         }
     }
 }
 
 define-command make-next-error -docstring 'Jump to the next make error' %{
-    evaluate-commands -collapse-jumps -try-client %opt{jumpclient} %{
+    evaluate-commands -try-client %opt{jumpclient} %{
         buffer '*make*'
         execute-keys "%opt{make_current_error_line}ggl" "/^(?:\w:)?[^:\n]+:\d+:(?:\d+:)?%opt{make_error_pattern}<ret>"
         make-jump
@@ -72,7 +80,7 @@ define-command make-next-error -docstring 'Jump to the next make error' %{
 }
 
 define-command make-previous-error -docstring 'Jump to the previous make error' %{
-    evaluate-commands -collapse-jumps -try-client %opt{jumpclient} %{
+    evaluate-commands -try-client %opt{jumpclient} %{
         buffer '*make*'
         execute-keys "%opt{make_current_error_line}g" "<a-/>^(?:\w:)?[^:\n]+:\d+:(?:\d+:)?%opt{make_error_pattern}<ret>"
         make-jump

@@ -36,7 +36,7 @@ static Face parse_face(StringView facedesc)
                 case 'B': res.attributes |= Attribute::Blink; break;
                 case 'd': res.attributes |= Attribute::Dim; break;
                 case 'i': res.attributes |= Attribute::Italic; break;
-                default: throw runtime_error(format("unknown face attribute '{}'", StringView{*attr_it}));
+                default: throw runtime_error(format("no such face attribute: '{}'", StringView{*attr_it}));
             }
         }
     }
@@ -63,7 +63,7 @@ String to_string(Attribute attributes)
                          filter([=](const Attr& a) { return attributes & a.attr; }) |
                          transform([](const Attr& a) { return a.name; });
 
-    return accumulate(filteredAttrs, String{"+"}, std::plus<>{});
+    return accumulate(filteredAttrs, "+"_str, std::plus<>{});
 }
 
 String to_string(Face face)
@@ -71,68 +71,69 @@ String to_string(Face face)
     return format("{},{}{}", face.fg, face.bg, face.attributes);
 }
 
-Face FaceRegistry::operator[](const String& facedesc)
+Face FaceRegistry::operator[](StringView facedesc) const
 {
-    auto it = m_aliases.find(facedesc);
-    while (it != m_aliases.end())
+    auto it = m_faces.find(facedesc);
+    if (it != m_faces.end())
     {
         if (it->value.alias.empty())
             return it->value.face;
-        it = m_aliases.find(it->value.alias);
+        return operator[](it->value.alias);
     }
+    if (m_parent)
+        return (*m_parent)[facedesc];
     return parse_face(facedesc);
 }
 
-void FaceRegistry::register_alias(const String& name, const String& facedesc,
-                                  bool override)
+void FaceRegistry::add_face(StringView name, StringView facedesc, bool override)
 {
-    if (not override and m_aliases.find(name) != m_aliases.end())
-        throw runtime_error(format("alias '{}' already defined", name));
+    if (not override and m_faces.find(name) != m_faces.end())
+        throw runtime_error(format("face '{}' already defined", name));
 
     if (name.empty() or is_color_name(name) or
         std::any_of(name.begin(), name.end(),
-                    [](char c){ return not isalnum(c); }))
-        throw runtime_error(format("invalid alias name: '{}'", name));
+                    [](char c){ return not is_word(c); }))
+        throw runtime_error(format("invalid face name: '{}'", name));
 
     if (name == facedesc)
         throw runtime_error(format("cannot alias face '{}' to itself", name));
 
-    FaceOrAlias& alias = m_aliases[name];
-    auto it = m_aliases.find(facedesc);
-    if (it != m_aliases.end())
+    for (auto it = m_faces.find(facedesc);
+         it != m_faces.end() and not it->value.alias.empty();
+         it = m_faces.find(it->value.alias))
     {
-        while (it != m_aliases.end())
-        {
-            if (it->value.alias.empty())
-                break;
-            if (it->value.alias == name)
-                throw runtime_error("face cycle detected");
-            it = m_aliases.find(it->value.alias);
-        }
+        if (it->value.alias == name)
+            throw runtime_error("face cycle detected");
+    }
 
-        alias.alias = facedesc;
-    }
-    else
+    FaceOrAlias& face = m_faces[name];
+
+    for (auto* registry = this; registry != nullptr; registry = registry->m_parent.get())
     {
-        alias.alias = "";
-        alias.face = parse_face(facedesc);
+        if (not registry->m_faces.contains(facedesc))
+            continue;
+        face.alias = facedesc.str(); // This is referencing another face
+        return;
     }
+
+    face.alias = "";
+    face.face = parse_face(facedesc);
 }
 
-CandidateList FaceRegistry::complete_alias_name(StringView prefix,
-                                                ByteCount cursor_pos) const
+void FaceRegistry::remove_face(StringView name)
 {
-    return complete(prefix, cursor_pos,
-                    m_aliases | transform(std::mem_fn(&AliasMap::Item::key)));
+    m_faces.remove(name);
 }
 
 FaceRegistry::FaceRegistry()
-    : m_aliases{
+    : m_faces{
         { "Default", {Face{ Color::Default, Color::Default }} },
         { "PrimarySelection", {Face{ Color::White, Color::Blue }} },
         { "SecondarySelection", {Face{ Color::Black, Color::Blue }} },
         { "PrimaryCursor", {Face{ Color::Black, Color::White }} },
         { "SecondaryCursor", {Face{ Color::Black, Color::White }} },
+        { "PrimaryCursorEol", {Face{ Color::Black, Color::Cyan }} },
+        { "SecondaryCursorEol", {Face{ Color::Black, Color::Cyan }} },
         { "LineNumbers", {Face{ Color::Default, Color::Default }} },
         { "LineNumberCursor", {Face{ Color::Default, Color::Default, Attribute::Reverse }} },
         { "LineNumbersWrapped", {Face{ Color::Default, Color::Default, Attribute::Italic }} },

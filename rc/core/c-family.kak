@@ -23,15 +23,18 @@ hook global BufCreate .*\.m %{
     set-option buffer filetype objc
 }
 
-define-command -hidden c-family-trim-autoindent %[ evaluate-commands -draft -itersel %[
+define-command -hidden c-family-trim-autoindent %{
     # remove the line if it's empty when leaving the insert mode
-    try %[ execute-keys <a-x> 1s^(\h+)$<ret> d ]
-] ]
+    try %{ execute-keys -draft <a-x> 1s^(\h+)$<ret> d }
+}
 
 define-command -hidden c-family-indent-on-newline %< evaluate-commands -draft -itersel %<
     execute-keys \;
     try %<
-        # if previous line closed a paren, copy indent of the opening paren line
+        # if previous line is part of a comment, do nothing
+        execute-keys -draft <a-?>/\*<ret> <a-K>^\h*[^/*\h]<ret>
+    > catch %<
+        # else if previous line closed a paren, copy indent of the opening paren line
         execute-keys -draft k<a-x> 1s(\))(\h+\w+)*\h*(\;\h*)?$<ret> m<a-\;>J <a-S> 1<a-&>
     > catch %<
         # else indent new lines with the same level as the previous one
@@ -71,13 +74,13 @@ define-command -hidden c-family-indent-on-closing-curly-brace %[
 
 define-command -hidden c-family-insert-on-closing-curly-brace %[
     # add a semicolon after a closing brace if part of a class, union or struct definition
-    try %[ execute-keys -itersel -draft hm<a-x>B<a-x><a-k>\A\h*(class|struct|union|enum)<ret> a\;<esc> ]
+    try %[ execute-keys -itersel -draft hm<a-x>B<a-x><a-k>\A\h*(class|struct|union|enum)<ret> '<a-;>;i;<esc>' ]
 ]
 
-define-command -hidden c-family-insert-on-newline %[ evaluate-commands -draft %[
+define-command -hidden c-family-insert-on-newline %[ evaluate-commands -itersel -draft %[
     execute-keys \;
     try %[
-        evaluate-commands -draft %[
+        evaluate-commands -draft -save-regs '/"' %[
             # copy the commenting prefix
             execute-keys -save-regs '' k <a-x>1s^\h*(//+\h*)<ret> y
             try %[
@@ -99,7 +102,7 @@ define-command -hidden c-family-insert-on-newline %[ evaluate-commands -draft %[
         try %[
             # if the previous line is opening the comment, insert star preceeded by space
             execute-keys -draft k<a-x><a-k>^\h*/\*<ret>
-            execute-keys -draft i<space>*<space><esc>
+            execute-keys -draft i*<space><esc>
         ] catch %[
            try %[
                 # if the next line is a comment line insert a star
@@ -117,14 +120,14 @@ define-command -hidden c-family-insert-on-newline %[ evaluate-commands -draft %[
         ]
 
         # trim trailing whitespace on the previous line
-        try %[ execute-keys -draft 1s(\h+)$<ret>d ]
+        try %[ execute-keys -draft s\h+$<ret> d ]
         # align the new star with the previous one
-        execute-keys J<a-x>1s^[^*]*(\*)<ret>&
+        execute-keys K<a-x>1s^[^*]*(\*)<ret>&
     ]
 ] ]
 
 # Regions definition are the same between c++ and objective-c
-%sh{
+evaluate-commands %sh{
     for ft in c cpp objc; do
         if [ "${ft}" = "objc" ]; then
             maybe_at='@?'
@@ -133,26 +136,24 @@ define-command -hidden c-family-insert-on-newline %[ evaluate-commands -draft %[
         fi
 
         printf %s\\n '
-            add-highlighter shared/ regions -default code -match-capture FT \
-                string %{MAYBEAT(?<!QUOTE)"} %{(?<!\\)(?:\\\\)*"} "" \
-                string %{R"([^(]*)\(} %{\)([^)]*)"} "" \
-                comment /\* \*/ "" \
-                comment // $ "" \
-                disabled ^\h*?#\h*if\h+(?:0|FALSE)\b "#\h*(?:else|elif|endif)" "#\h*if(?:def)?" \
-                macro %{^\h*?\K#} %{(?<!\\)\n} ""
+            add-highlighter shared/FT regions
+            add-highlighter shared/FT/code default-region group
+            add-highlighter shared/FT/string region %{MAYBEAT(?<!QUOTE)(?<!QUOTE\\)"} %{(?<!\\)(?:\\\\)*"} fill string
+            add-highlighter shared/FT/raw_string region %{R"([^(]*)\(} %{\)([^")]*)"} fill string
+            add-highlighter shared/FT/comment region /\* \*/ fill comment
+            add-highlighter shared/FT/line_comment region // $ fill comment
+            add-highlighter shared/FT/disabled region -recurse "#\h*if(?:def)?" ^\h*?#\h*if\h+(?:0|FALSE)\b "#\h*(?:else|elif|endif)" fill rgb:666666
+            add-highlighter shared/FT/macro region %{^\h*?\K#} %{(?<!\\)\n} group
 
-            add-highlighter shared/FT/string fill string
-            add-highlighter shared/FT/comment fill comment
-            add-highlighter shared/FT/disabled fill rgb:666666
-            add-highlighter shared/FT/macro fill meta
-            add-highlighter shared/FT/macro regex ^\h*#include\h+(\S*) 1:module
+            add-highlighter shared/FT/macro/ fill meta
+            add-highlighter shared/FT/macro/ regex ^\h*#include\h+(\S*) 1:module
             ' | sed -e "s/FT/${ft}/g; s/QUOTE/'/g; s/MAYBEAT/${maybe_at}/;"
     done
 }
 
 # c specific
-add-highlighter shared/c/code regex %{\b-?(0x[0-9a-fA-F]+|\d+)[fdiu]?|'((\\.)?|[^'\\])'} 0:value
-%sh{
+add-highlighter shared/c/code/numbers regex %{\b-?(0x[0-9a-fA-F]+|\d+)[fdiu]?|'((\\.)?|[^'\\])'} 0:value
+evaluate-commands %sh{
     # Grammar
     keywords="asm break case continue default do else for goto if return
               sizeof switch while"
@@ -161,42 +162,42 @@ add-highlighter shared/c/code regex %{\b-?(0x[0-9a-fA-F]+|\d+)[fdiu]?|'((\\.)?|[
     types="char double float int long short signed size_t unsigned void"
     values="NULL"
 
-    join() { printf "%s" "$1" | tr -s ' \n' "$2"; }
+    join() { sep=$2; eval set -- $1; IFS="$sep"; echo "$*"; }
 
     # Add the language's grammar to the static completion list
     printf '%s\n' "hook global WinSetOption filetype=c %{
-        set-option window static_words '$(join "${keywords}:${attributes}:${types}:${values}" ':')'
+        set-option window static_words $(join "${keywords} ${attributes} ${types} ${values}" ' ')
     }"
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/c/code regex \b($(join "${keywords}" '|'))\b 0:keyword
-        add-highlighter shared/c/code regex \b($(join "${attributes}" '|'))\b 0:attribute
-        add-highlighter shared/c/code regex \b($(join "${types}" '|'))\b 0:type
-        add-highlighter shared/c/code regex \b($(join "${values}" '|'))\b 0:value
+        add-highlighter shared/c/code/keywords regex \b($(join "${keywords}" '|'))\b 0:keyword
+        add-highlighter shared/c/code/attributes regex \b($(join "${attributes}" '|'))\b 0:attribute
+        add-highlighter shared/c/code/types regex \b($(join "${types}" '|'))\b 0:type
+        add-highlighter shared/c/code/values regex \b($(join "${values}" '|'))\b 0:value
     "
 }
 
 # c++ specific
 
 # integer literals
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b[1-9]('?\d+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b0b[01]('?[01]+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b0('?[0-7]+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b0x[\da-f]('?[\da-f]+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b[1-9]('?\d+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b0b[01]('?[01]+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b0('?[0-7]+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b0x[\da-f]('?[\da-f]+)*(ul?l?|ll?u?)?\b(?!\.)} 0:value
 
 # floating point literals
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b\d('?\d+)*\.([fl]\b|\B)(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b\d('?\d+)*\.?e[+-]?\d('?\d+)*[fl]?\b(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)(\b(\d('?\d+)*)|\B)\.\d('?[\d]+)*(e[+-]?\d('?\d+)*)?[fl]?\b(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b0x[\da-f]('?[\da-f]+)*\.([fl]\b|\B)(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b0x[\da-f]('?[\da-f]+)*\.?p[+-]?\d('?\d+)*)?[fl]?\b(?!\.)} 0:value
-add-highlighter shared/cpp/code regex %{(?i)(?<!\.)\b0x([\da-f]('?[\da-f]+)*)?\.\d('?[\d]+)*(p[+-]?\d('?\d+)*)?[fl]?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b\d('?\d+)*\.([fl]\b|\B)(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b\d('?\d+)*\.?e[+-]?\d('?\d+)*[fl]?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)(\b(\d('?\d+)*)|\B)\.\d('?[\d]+)*(e[+-]?\d('?\d+)*)?[fl]?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b0x[\da-f]('?[\da-f]+)*\.([fl]\b|\B)(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b0x[\da-f]('?[\da-f]+)*\.?p[+-]?\d('?\d+)*)?[fl]?\b(?!\.)} 0:value
+add-highlighter shared/cpp/code/ regex %{(?i)(?<!\.)\b0x([\da-f]('?[\da-f]+)*)?\.\d('?[\d]+)*(p[+-]?\d('?\d+)*)?[fl]?\b(?!\.)} 0:value
 
 # character literals (no multi-character literals)
-add-highlighter shared/cpp/code regex %{(\b(u8|u|U|L)|\B)'((\\.)|[^'\\])'\B} 0:value
+add-highlighter shared/cpp/code/char regex %{(\b(u8|u|U|L)|\B)'((\\.)|[^'\\])'\B} 0:value
 
-%sh{
+evaluate-commands %sh{
     # Grammar
     keywords="alignas alignof and and_eq asm bitand bitor break case catch
               compl const_cast continue decltype default delete do dynamic_cast
@@ -211,36 +212,36 @@ add-highlighter shared/cpp/code regex %{(\b(u8|u|U|L)|\B)'((\\.)|[^'\\])'\B} 0:v
            nullptr_t ptrdiff_t short signed size_t unsigned void wchar_t"
     values="NULL false nullptr this true"
 
-    join() { printf "%s" "$1" | tr -s ' \n' "$2"; }
+    join() { sep=$2; eval set -- $1; IFS="$sep"; echo "$*"; }
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=cpp %{
-        set-option window static_words '$(join "${keywords}:${attributes}:${types}:${values}" ':')'
+        set-option window static_words $(join "${keywords} ${attributes} ${types} ${values}" ' ')
     }"
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/cpp/code regex \b($(join "${keywords}" '|'))\b 0:keyword
-        add-highlighter shared/cpp/code regex \b($(join "${attributes}" '|'))\b 0:attribute
-        add-highlighter shared/cpp/code regex \b($(join "${types}" '|'))\b 0:type
-        add-highlighter shared/cpp/code regex \b($(join "${values}" '|'))\b 0:value
+        add-highlighter shared/cpp/code/keywords regex \b($(join "${keywords}" '|'))\b 0:keyword
+        add-highlighter shared/cpp/code/attributes regex \b($(join "${attributes}" '|'))\b 0:attribute
+        add-highlighter shared/cpp/code/types regex \b($(join "${types}" '|'))\b 0:type
+        add-highlighter shared/cpp/code/values regex \b($(join "${values}" '|'))\b 0:value
     "
 }
 
 # c and c++ compiler macros
-%sh{
+evaluate-commands %sh{
     builtin_macros="__cplusplus|__STDC_HOSTED__|__FILE__|__LINE__|__DATE__|__TIME__|__STDCPP_DEFAULT_NEW_ALIGNMENT__"
 
     printf %s "
-        add-highlighter shared/c/code regex \b(${builtin_macros})\b 0:builtin
-        add-highlighter shared/cpp/code regex \b(${builtin_macros})\b 0:builtin
+        add-highlighter shared/c/code/macros regex \b(${builtin_macros})\b 0:builtin
+        add-highlighter shared/cpp/code/macros regex \b(${builtin_macros})\b 0:builtin
     "
 }
 
 # objective-c specific
-add-highlighter shared/objc/code regex %{\b-?\d+[fdiu]?|'((\\.)?|[^'\\])'} 0:value
+add-highlighter shared/objc/code/number regex %{\b-?\d+[fdiu]?|'((\\.)?|[^'\\])'} 0:value
 
-%sh{
+evaluate-commands %sh{
     # Grammar
     keywords="break case continue default do else for goto if return switch
               while"
@@ -253,20 +254,20 @@ add-highlighter shared/objc/code regex %{\b-?\d+[fdiu]?|'((\\.)?|[^'\\])'} 0:val
     decorators="autoreleasepool catch class end implementation interface
                 property protocol selector synchronized synthesize try"
 
-    join() { printf "%s" "$1" | tr -s ' \n' "$2"; }
+    join() { sep=$2; eval set -- $1; IFS="$sep"; echo "$*"; }
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=objc %{
-        set-option window static_words '$(join "${keywords}:${attributes}:${types}:${values}:${decorators}" ':')'
+        set-option window static_words $(join "${keywords} ${attributes} ${types} ${values} ${decorators}" ' ')
     }"
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/objc/code regex \b($(join "${keywords}" '|'))\b 0:keyword
-        add-highlighter shared/objc/code regex \b($(join "${attributes}" '|'))\b 0:attribute
-        add-highlighter shared/objc/code regex \b($(join "${types}" '|'))\b 0:type
-        add-highlighter shared/objc/code regex \b($(join "${values}" '|'))\b 0:value
-        add-highlighter shared/objc/code regex  @($(join "${decorators}" '|'))\b 0:attribute
+        add-highlighter shared/objc/code/keywords regex \b($(join "${keywords}" '|'))\b 0:keyword
+        add-highlighter shared/objc/code/attributes regex \b($(join "${attributes}" '|'))\b 0:attribute
+        add-highlighter shared/objc/code/types regex \b($(join "${types}" '|'))\b 0:type
+        add-highlighter shared/objc/code/values regex \b($(join "${values}" '|'))\b 0:value
+        add-highlighter shared/objc/code/decorators regex  @($(join "${decorators}" '|'))\b 0:attribute
     "
 }
 
@@ -277,7 +278,7 @@ hook global WinSetOption filetype=(c|cpp|objc) %[
         remove-hooks window c-family-insert
     }
 
-    hook -group c-family-indent window InsertEnd .* c-family-trim-autoindent
+    hook -group c-family-indent window ModeChange insert:.* c-family-trim-autoindent
     hook -group c-family-insert window InsertChar \n c-family-insert-on-newline
     hook -group c-family-indent window InsertChar \n c-family-indent-on-newline
     hook -group c-family-indent window InsertChar \{ c-family-indent-on-opening-curly-brace
@@ -295,13 +296,13 @@ hook global WinSetOption filetype=(?!c)(?!cpp)(?!objc).* %[
     unalias window alt c-family-alternative-file
 ]
 
-hook -group c-highlight global WinSetOption filetype=c %[ add-highlighter window ref c ]
+hook -group c-highlight global WinSetOption filetype=c %[ add-highlighter window/c ref c ]
 hook -group c-highlight global WinSetOption filetype=(?!c).* %[ remove-highlighter window/c ]
 
-hook -group cpp-highlight global WinSetOption filetype=cpp %[ add-highlighter window ref cpp ]
+hook -group cpp-highlight global WinSetOption filetype=cpp %[ add-highlighter window/cpp ref cpp ]
 hook -group cpp-highlight global WinSetOption filetype=(?!cpp).* %[ remove-highlighter window/cpp ]
 
-hook -group objc-highlight global WinSetOption filetype=objc %[ add-highlighter window ref objc ]
+hook -group objc-highlight global WinSetOption filetype=objc %[ add-highlighter window/objc ref objc ]
 hook -group objc-highlight global WinSetOption filetype=(?!objc).* %[ remove-highlighter window/objc ]
 
 declare-option -docstring %{control the type of include guard to be inserted in empty headers
@@ -311,7 +312,7 @@ Can be one of the following:
     str c_include_guard_style "ifdef"
 
 define-command -hidden c-family-insert-include-guards %{
-    %sh{
+    evaluate-commands %sh{
         case "${kak_opt_c_include_guard_style}" in
             ifdef)
                 echo 'execute-keys ggi<c-r>%<ret><esc>ggxs\.<ret>c_<esc><space>A_INCLUDED<esc>ggxyppI#ifndef<space><esc>jI#define<space><esc>jI#endif<space>//<space><esc>O<esc>'
@@ -327,17 +328,19 @@ define-command -hidden c-family-insert-include-guards %{
 hook -group c-family-insert global BufNewFile .*\.(h|hh|hpp|hxx|H) c-family-insert-include-guards
 
 declare-option -docstring "colon separated list of path in which header files will be looked for" \
-    str-list alt_dirs ".:.."
+    str-list alt_dirs '.' '..'
 
-define-command c-family-alternative-file -docstring "Jump to the alternate file (header/implementation)" %{ %sh{
-    alt_dirs=$(printf %s\\n "${kak_opt_alt_dirs}" | tr ':' '\n')
+define-command c-family-alternative-file -docstring "Jump to the alternate file (header/implementation)" %{ evaluate-commands %sh{
     file="${kak_buffile##*/}"
     file_noext="${file%.*}"
     dir=$(dirname "${kak_buffile}")
 
+    # Set $@ to alt_dirs
+    eval "set -- ${kak_opt_alt_dirs}"
+
     case ${file} in
         *.c|*.cc|*.cpp|*.cxx|*.C|*.inl|*.m)
-            for alt_dir in ${alt_dirs}; do
+            for alt_dir in "$@"; do
                 for ext in h hh hpp hxx H; do
                     altname="${dir}/${alt_dir}/${file_noext}.${ext}"
                     if [ -f ${altname} ]; then
@@ -348,7 +351,7 @@ define-command c-family-alternative-file -docstring "Jump to the alternate file 
             done
         ;;
         *.h|*.hh|*.hpp|*.hxx|*.H)
-            for alt_dir in ${alt_dirs}; do
+            for alt_dir in "$@"; do
                 for ext in c cc cpp cxx C m; do
                     altname="${dir}/${alt_dir}/${file_noext}.${ext}"
                     if [ -f ${altname} ]; then

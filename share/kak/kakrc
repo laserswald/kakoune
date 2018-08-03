@@ -1,39 +1,40 @@
 def -params 1 -docstring "colorscheme <name>: enable named colorscheme" \
-  -shell-candidates %{
-      localconfdir=${XDG_CONFIG_HOME:-${HOME}/.config}/kak
-      for col in ${kak_runtime}/colors/*.kak ${localconfdir}/colors/*.kak; do
-          candidate=$(basename "${col}" .kak)
-          case ${candidate} in
-             \**) ;;
-             *) echo ${candidate} ;;
-          esac
-      done
+    -shell-candidates %{
+    find -L "${kak_runtime}/colors" "${kak_config}/colors" -type f -name '*\.kak' \
+        | while read -r filename; do
+            basename="${filename##*/}"
+            printf %s\\n "${basename%.*}"
+        done | sort -u
   } \
-  colorscheme %{ %sh{
-    localconfdir=${XDG_CONFIG_HOME:-${HOME}/.config}/kak
-    if [ $# -eq 1 ]; then
-        if [ -f "${localconfdir}/colors/$1.kak" ];then
-            echo "source '${localconfdir}/colors/$1.kak'"
-        else
-            echo "source '${kak_runtime}/colors/$1.kak'"
-        fi
+  colorscheme %{ evaluate-commands %sh{
+    find_colorscheme() {
+        find -L "${1}" -type f -name "${2}".kak | head -n 1
+    }
+
+    if [ -d "${kak_config}/colors" ]; then
+        filename=$(find_colorscheme "${kak_config}/colors" "${1}")
+    fi
+    if [ -z "${filename}" ]; then
+        filename=$(find_colorscheme "${kak_runtime}/colors" "${1}")
+    fi
+
+    if [ -n "${filename}" ]; then
+        printf 'source %%{%s}' "${filename}"
     else
-        echo "echo -color Error 'Usage: colorscheme <scheme name>'"
+        echo "echo -markup '{Error}No such colorscheme'"
     fi
 }}
 
-%sh{
+evaluate-commands %sh{
     autoload_directory() {
         find -L "$1" -type f -name '*\.kak' \
-            -exec printf 'try %%{ source "%s" } catch %%{ echo -debug Autoload: could not load "%s" }\n' '{}' '{}' \;
+            | sed 's/.*/try %{ source "&" } catch %{ echo -debug Autoload: could not load "&" }/'
     }
-
-    localconfdir=${XDG_CONFIG_HOME:-${HOME}/.config}/kak
 
     echo "colorscheme default"
 
-    if [ -d "${localconfdir}/autoload" ]; then
-        autoload_directory ${localconfdir}/autoload
+    if [ -d "${kak_config}/autoload" ]; then
+        autoload_directory ${kak_config}/autoload
     elif [ -d "${kak_runtime}/autoload" ]; then
         autoload_directory ${kak_runtime}/autoload
     fi
@@ -42,7 +43,7 @@ def -params 1 -docstring "colorscheme <name>: enable named colorscheme" \
         echo "source '${kak_runtime}/kakrc.local'"
     fi
 
-    if [ -f "${localconfdir}/kakrc" ]; then
-        echo "source '${localconfdir}/kakrc'"
+    if [ -f "${kak_config}/kakrc" ]; then
+        echo "source '${kak_config}/kakrc'"
     fi
 }

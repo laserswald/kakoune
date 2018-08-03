@@ -1,6 +1,7 @@
 #include "shell_manager.hh"
 
 #include "buffer_utils.hh"
+#include "client.hh"
 #include "clock.hh"
 #include "context.hh"
 #include "display_buffer.hh"
@@ -9,6 +10,7 @@
 #include "file.hh"
 #include "flags.hh"
 #include "option.hh"
+#include "option_types.hh"
 #include "regex.hh"
 
 #include <cstring>
@@ -23,7 +25,8 @@ extern char **environ;
 namespace Kakoune
 {
 
-ShellManager::ShellManager()
+ShellManager::ShellManager(ConstArrayView<EnvVarDesc> builtin_env_vars)
+    : m_env_vars{builtin_env_vars}
 {
     // Get a guaranteed to be POSIX shell binary
     {
@@ -125,10 +128,10 @@ Vector<String> generate_env(StringView cmdline, const Context& context, const Sh
         StringView name{(*it)[1].first, (*it)[1].second};
 
         auto match_name = [&](const String& s) {
-            return s.length() > name.length()  and
-                   prefix_match(s, name) and s[name.length()] == '=';
+            return s.substr(0_byte, name.length()) == name and
+                   s.substr(name.length(), 1_byte) == "=";
         };
-        if (contains_that(kak_env, match_name))
+        if (any_of(kak_env, match_name))
             continue;
 
         auto var_it = shell_context.env_vars.find(name);
@@ -164,7 +167,13 @@ std::pair<String, int> ShellManager::eval(
     Pipe child_stdin{not input.empty()}, child_stdout, child_stderr;
     pid_t pid = spawn_shell(m_shell.c_str(), cmdline, shell_context.params, kak_env,
                             [&child_stdin, &child_stdout, &child_stderr] {
-        auto move = [](int oldfd, int newfd) { dup2(oldfd, newfd); close(oldfd); };
+        set_signal_handler(SIGPIPE, SIG_DFL);
+        auto move = [](int oldfd, int newfd)
+        {
+            if (oldfd == newfd)
+                return;
+            dup2(oldfd, newfd); close(oldfd);
+        };
 
         if (child_stdin.read_fd() != -1)
         {
@@ -254,15 +263,22 @@ std::pair<String, int> ShellManager::eval(
 
     using namespace std::chrono;
     static constexpr seconds wait_timeout{1};
-    bool wait_notified = false;
+    Optional<DisplayLine> previous_status;
     Timer wait_timer{wait_time + wait_timeout, [&](Timer& timer)
     {
         auto wait_duration = Clock::now() - wait_time;
-        context.print_status({ format("waiting for shell command to finish ({}s)",
-                                      duration_cast<seconds>(wait_duration).count()),
-                                get_face("Information") }, true);
+        if (context.has_client())
+        {
+            auto& client = context.client();
+            if (not previous_status)
+                previous_status = client.current_status();
+
+            client.print_status({ format("waiting for shell command to finish ({}s)",
+                                          duration_cast<seconds>(wait_duration).count()),
+                                    context.faces()["Information"] });
+            client.redraw_ifn();
+        }
         timer.set_next_date(Clock::now() + wait_timeout);
-        wait_notified = true;
     }, EventMode::Urgent};
 
     while (not terminated or child_stdin.write_fd() != -1 or
@@ -287,16 +303,13 @@ std::pair<String, int> ShellManager::eval(
                                      (size_t)full.count(), (size_t)spawn.count(), (size_t)wait.count()));
     }
 
-    if (wait_notified) // clear the status line
-        context.print_status({ "", get_face("Information") }, true);
+    if (previous_status) // restore the status line
+    {
+        context.print_status(std::move(*previous_status));
+        context.client().redraw_ifn();
+    }
 
     return { std::move(stdout_contents), WIFEXITED(status) ? WEXITSTATUS(status) : -1 };
-}
-
-void ShellManager::register_env_var(StringView str, bool prefix,
-                                    EnvVarRetriever retriever)
-{
-    m_env_vars.push_back({ str.str(), prefix, std::move(retriever) });
 }
 
 String ShellManager::get_val(StringView name, const Context& context) const
@@ -315,7 +328,7 @@ CandidateList ShellManager::complete_env_var(StringView prefix,
                                              ByteCount cursor_pos) const
 {
     return complete(prefix, cursor_pos,
-                    m_env_vars | transform(std::mem_fn(&EnvVarDesc::str)));
+                    m_env_vars | transform(&EnvVarDesc::str));
 }
 
 }

@@ -86,6 +86,7 @@ void reload_file_buffer(Buffer& buffer)
     kak_assert(buffer.flags() & Buffer::Flags::File);
     MappedFile file_data{buffer.name()};
     buffer.reload(file_data, file_data.st.st_mtim);
+    buffer.flags() &= ~Buffer::Flags::New;
 }
 
 Buffer* create_fifo_buffer(String name, int fd, Buffer::Flags flags, bool scroll)
@@ -180,12 +181,17 @@ void write_to_debug_buffer(StringView str)
     // where the user can put its cursor to scroll with new messages
     const bool eol_back = not str.empty() and str.back() == '\n';
     if (Buffer* buffer = BufferManager::instance().get_buffer_ifp(debug_buffer_name))
+    {
+        buffer->flags() &= ~Buffer::Flags::ReadOnly;
+        auto restore = on_scope_end([buffer] { buffer->flags() |= Buffer::Flags::ReadOnly; });
+
         buffer->insert(buffer->back_coord(), eol_back ? str : str + "\n");
+    }
     else
     {
         String line = str + (eol_back ? "\n" : "\n\n");
         BufferManager::instance().create_buffer(
-            debug_buffer_name.str(), Buffer::Flags::NoUndo | Buffer::Flags::Debug,
+            debug_buffer_name.str(), Buffer::Flags::NoUndo | Buffer::Flags::Debug | Buffer::Flags::ReadOnly,
             line, InvalidTime);
     }
 }

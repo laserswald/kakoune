@@ -50,8 +50,8 @@ class Context
 public:
     enum class Flags
     {
-        None = 0,
-        Transient = 1,
+        None  = 0,
+        Draft = 1,
     };
     friend constexpr bool with_bit_ops(Meta::Type<Flags>) { return true; }
 
@@ -92,11 +92,12 @@ public:
     Scope& scope() const;
 
     OptionManager& options() const { return scope().options(); }
-    HookManager& hooks()     const { return scope().hooks(); }
+    HookManager&   hooks()   const { return scope().hooks(); }
     KeymapManager& keymaps() const { return scope().keymaps(); }
     AliasRegistry& aliases() const { return scope().aliases(); }
+    FaceRegistry&  faces()   const { return scope().faces(); }
 
-    void print_status(DisplayLine status, bool immediate = false) const;
+    void print_status(DisplayLine status) const;
 
     StringView main_sel_register_value(StringView reg) const;
 
@@ -118,7 +119,11 @@ public:
     Flags flags() const { return m_flags; }
 
     JumpList& jump_list() { return m_jump_list; }
-    void push_jump() { m_jump_list.push(selections()); }
+    void push_jump(bool force = false)
+    {
+        if (force or not (m_flags & Flags::Draft))
+            m_jump_list.push(selections());
+    }
 
     template<typename Func>
     void set_last_select(Func&& last_select) { m_last_select = std::forward<Func>(last_select); }
@@ -132,7 +137,7 @@ private:
 
     friend struct ScopedEdition;
 
-    Flags m_flags;
+    Flags m_flags = Flags::None;
 
     SafePtr<InputHandler> m_input_handler;
     SafePtr<Window>       m_window;
@@ -154,10 +159,11 @@ private:
 struct ScopedEdition
 {
     ScopedEdition(Context& context)
-        : m_context(context), m_buffer(&context.buffer())
-    { m_context.begin_edition(); }
+        : m_context{context},
+          m_buffer{context.has_buffer() ? &context.buffer() : nullptr}
+    { if (m_buffer) m_context.begin_edition(); }
 
-    ~ScopedEdition() { m_context.end_edition(); }
+    ~ScopedEdition() { if (m_buffer) m_context.end_edition(); }
 
     Context& context() const { return m_context; }
 private:

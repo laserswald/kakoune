@@ -43,7 +43,7 @@ void OptionManager::unregister_watcher(OptionManagerWatcher& watcher) const
 struct option_not_found : public runtime_error
 {
     option_not_found(StringView name)
-        : runtime_error("option not found: " + name) {}
+        : runtime_error(format("option not found: '{}'. Use declare-option first", name)) {}
 };
 
 Option& OptionManager::get_local_option(StringView name)
@@ -87,20 +87,6 @@ void OptionManager::unset_option(StringView name)
     }
 }
 
-OptionManager::OptionList OptionManager::flatten_options() const
-{
-    OptionList res = m_parent ? m_parent->flatten_options() : OptionList{};
-    for (auto& option : m_options)
-    {
-        auto it = find_if(res, [&](const Option* opt) { return opt->name() == option.key; });
-        if (it != res.end())
-            *it = option.value.get();
-        else
-            res.emplace_back(option.value.get());
-    }
-    return res;
-}
-
 void OptionManager::on_option_changed(const Option& option)
 {
     // if parent option changed, but we overrided it, it's like nothing happened
@@ -123,7 +109,7 @@ CandidateList OptionsRegistry::complete_option_name(StringView prefix,
     return complete(prefix, cursor_pos, m_descs |
                     filter([](const OptionPtr& desc)
                            { return not (desc->flags() & OptionFlags::Hidden); }) |
-                    transform(std::mem_fn(&OptionDesc::name)));
+                    transform(&OptionDesc::name));
 }
 
 }

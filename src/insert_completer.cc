@@ -11,6 +11,7 @@
 #include "regex.hh"
 #include "window.hh"
 #include "word_db.hh"
+#include "option_types.hh"
 #include "utf8_iterator.hh"
 #include "user_interface.hh"
 
@@ -33,41 +34,29 @@ String option_to_string(const InsertCompleterDesc& opt)
         case InsertCompleterDesc::Option:
             return "option=" + (opt.param ? *opt.param : "");
         case InsertCompleterDesc::Line:
-            return "line";
+            return "line=" + (opt.param ? *opt.param : "");
     }
     kak_assert(false);
     return "";
 }
 
-void option_from_string(StringView str, InsertCompleterDesc& opt)
+InsertCompleterDesc option_from_string(Meta::Type<InsertCompleterDesc>, StringView str)
 {
     if (str.substr(0_byte, 7_byte) == "option=")
-    {
-        opt.mode = InsertCompleterDesc::Option;
-        opt.param = str.substr(7_byte).str();
-        return;
-    }
+        return {InsertCompleterDesc::Option, str.substr(7_byte).str()};
     else if (str.substr(0_byte, 5_byte) == "word=")
     {
         auto param = str.substr(5_byte);
         if (param == "all" or param == "buffer")
-        {
-            opt.mode = InsertCompleterDesc::Word;
-            opt.param = param.str();
-            return;
-        }
+            return {InsertCompleterDesc::Word, param.str()};
     }
     else if (str == "filename")
+        return {InsertCompleterDesc::Filename, {}};
+    else if (str.substr(0_byte, 5_byte) == "line=")
     {
-        opt.mode = InsertCompleterDesc::Filename;
-        opt.param = Optional<String>{};
-        return;
-    }
-    else if (str == "line")
-    {
-        opt.mode = InsertCompleterDesc::Line;
-        opt.param = Optional<String>{};
-        return;
+        auto param = str.substr(5_byte);
+        if (param == "all" or param == "buffer")
+            return {InsertCompleterDesc::Line, param.str()};
     }
     throw runtime_error(format("invalid completer description: '{}'", str));
 }
@@ -75,17 +64,10 @@ void option_from_string(StringView str, InsertCompleterDesc& opt)
 namespace
 {
 
-WordDB& get_word_db(const Buffer& buffer)
-{
-    static const ValueId word_db_id = get_free_value_id();
-    Value& cache_val = buffer.values()[word_db_id];
-    if (not cache_val)
-        cache_val = Value(WordDB{buffer});
-    return cache_val.as<WordDB>();
-}
-
 template<bool other_buffers>
-InsertCompletion complete_word(const SelectionList& sels, const OptionManager& options)
+InsertCompletion complete_word(const SelectionList& sels,
+                               const OptionManager& options,
+                               const FaceRegistry& faces)
 {
     ConstArrayView<Codepoint> extra_word_chars = options["extra_word_chars"].get<Vector<Codepoint, MemoryDomain::Options>>();
     auto is_word_pred = [extra_word_chars](Codepoint c) { return is_word(c, extra_word_chars); };
@@ -171,37 +153,35 @@ InsertCompletion complete_word(const SelectionList& sels, const OptionManager& o
 
     constexpr size_t max_count = 100;
     // Gather best max_count matches
-    auto greater = [](auto& lhs, auto& rhs) { return rhs < lhs; };
-    auto first = matches.begin(), last = matches.end();
-    std::make_heap(first, last, greater);
     InsertCompletion::CandidateList candidates;
     candidates.reserve(std::min(matches.size(), max_count));
-    while (candidates.size() < max_count and first != last)
-    {
-        if (candidates.empty() or candidates.back().completion != first->candidate())
-        {
-            DisplayLine menu_entry;
-            if (first->buffer)
-            {
-                const auto pad_len = longest + 1 - first->candidate().char_length();
-                menu_entry.push_back(first->candidate().str());
-                menu_entry.push_back(String{' ', pad_len});
-                menu_entry.push_back({ first->buffer->display_name(), get_face("MenuInfo") });
-            }
-            else
-                menu_entry.push_back(first->candidate().str());
 
-            candidates.push_back({first->candidate().str(), "", std::move(menu_entry)});
+    for_n_best(matches, max_count, [](auto& lhs, auto& rhs) { return rhs < lhs; },
+               [&](RankedMatchAndBuffer& m) {
+        if (not candidates.empty() and candidates.back().completion == m.candidate())
+            return false;
+        DisplayLine menu_entry;
+        if (other_buffers && m.buffer)
+        {
+            const auto pad_len = longest + 1 - m.candidate().char_length();
+            menu_entry.push_back({ m.candidate().str(), {} });
+            menu_entry.push_back({ String{' ', pad_len}, {} });
+            menu_entry.push_back({ m.buffer->display_name(), faces["MenuInfo"] });
         }
-        std::pop_heap(first, last--, greater);
-    }
+        else
+            menu_entry.push_back({ m.candidate().str(), {} });
+
+        candidates.push_back({m.candidate().str(), "", std::move(menu_entry)});
+        return true;
+    });
 
     return { std::move(candidates), word_begin, cursor_pos, buffer.timestamp() };
 }
 
 template<bool require_slash>
 InsertCompletion complete_filename(const SelectionList& sels,
-                                   const OptionManager& options)
+                                   const OptionManager& options,
+                                   const FaceRegistry&)
 {
     const Buffer& buffer = sels.buffer();
     auto pos = buffer.iterator_at(sels.main().cursor());
@@ -217,9 +197,6 @@ InsertCompletion complete_filename(const SelectionList& sels,
     if (begin != buffer.begin() and *begin == '/' and *(begin-1) == '~')
         --begin;
 
-    if (begin == pos)
-        return {};
-
     StringView prefix = buffer.substr(begin.coord(), pos.coord());
     if (require_slash and not contains(prefix, '/'))
         return {};
@@ -234,20 +211,30 @@ InsertCompletion complete_filename(const SelectionList& sels,
     {
         for (auto& filename : Kakoune::complete_filename(prefix,
                                                          options["ignored_files"].get<Regex>()))
-            candidates.push_back({ filename, "", filename });
+            candidates.push_back({ filename, "", {filename, {}} });
     }
     else
     {
+        Vector<String> visited_dirs;
         for (auto dir : options["path"].get<StringList>())
         {
+            dir = real_path(parse_filename(dir, (buffer.flags() & Buffer::Flags::File) ?
+                                           split_path(buffer.name()).first : StringView{}));
+
             if (not dir.empty() and dir.back() != '/')
                 dir += '/';
+
+            if (contains(visited_dirs, dir))
+                continue;
+
             for (auto& filename : Kakoune::complete_filename(dir + prefix,
                                                              options["ignored_files"].get<Regex>()))
             {
                 StringView candidate = filename.substr(dir.length());
-                candidates.push_back({ candidate.str(), "", candidate.str() });
+                candidates.push_back({ candidate.str(), "", {candidate.str(), {}} });
             }
+
+            visited_dirs.push_back(std::move(dir));
         }
     }
     if (candidates.empty())
@@ -257,6 +244,7 @@ InsertCompletion complete_filename(const SelectionList& sels,
 
 InsertCompletion complete_option(const SelectionList& sels,
                                  const OptionManager& options,
+                                 const FaceRegistry& faces,
                                  StringView option_name)
 {
     const Buffer& buffer = sels.buffer();
@@ -283,8 +271,7 @@ InsertCompletion complete_option(const SelectionList& sels,
         }
         size_t timestamp = (size_t)str_to_int({match[4].first, match[4].second});
         auto changes = buffer.changes_since(timestamp);
-        if (contains_that(changes, [&](const Buffer::Change& change)
-                          { return change.begin < coord; }))
+        if (any_of(changes, [&](auto&& change) { return change.begin < coord; }))
             return {};
 
         if (cursor_pos.line == coord.line and cursor_pos.column >= coord.column)
@@ -313,8 +300,8 @@ InsertCompletion complete_option(const SelectionList& sels,
                     match.docstring = std::get<1>(candidate);
                     auto& menu = std::get<2>(candidate);
                     match.menu_entry = not menu.empty() ?
-                        parse_display_line(expand_tabs(menu, tabstop, column))
-                      : DisplayLine{ expand_tabs(menu, tabstop, column) };
+                        parse_display_line(expand_tabs(menu, tabstop, column), faces)
+                      : DisplayLine{ expand_tabs(menu, tabstop, column), {} };
 
                     matches.push_back(std::move(match));
                 }
@@ -342,7 +329,10 @@ InsertCompletion complete_option(const SelectionList& sels,
     return {};
 }
 
-InsertCompletion complete_line(const SelectionList& sels, const OptionManager& options)
+template<bool other_buffers>
+InsertCompletion complete_line(const SelectionList& sels,
+                               const OptionManager& options,
+                               const FaceRegistry&)
 {
     const Buffer& buffer = sels.buffer();
     BufferCoord cursor_pos = sels.main().cursor();
@@ -352,18 +342,36 @@ InsertCompletion complete_line(const SelectionList& sels, const OptionManager& o
 
     StringView prefix = buffer[cursor_pos.line].substr(0_byte, cursor_pos.column);
     InsertCompletion::CandidateList candidates;
-    for (LineCount l = 0_line; l < buffer.line_count(); ++l)
-    {
-        if (l == cursor_pos.line)
-            continue;
-        ByteCount len = buffer[l].length();
-        if (len > cursor_pos.column and std::equal(prefix.begin(), prefix.end(), buffer[l].begin()))
+
+    auto add_candidates = [&](const Buffer& buf) {
+        for (LineCount l = 0_line; l < buf.line_count(); ++l)
         {
-            StringView candidate = buffer[l].substr(0_byte, len-1);
-            candidates.push_back({candidate.str(), "",
-                                  expand_tabs(candidate, tabstop, column)});
+            if (buf.name() == buffer.name() && l == cursor_pos.line)
+                continue;
+            const StringView line = buf[l];
+            if (prefix == line.substr(0_byte, prefix.length()))
+            {
+                StringView candidate = line.substr(0_byte, line.length()-1);
+                candidates.push_back({candidate.str(), "",
+                                      {expand_tabs(candidate, tabstop, column), {}}});
+                // perf: it's unlikely the user intends to search among >10 candidates anyway
+                if (candidates.size() == 100)
+                    break;
+            }
+        }
+    };
+
+    add_candidates(buffer);
+
+    if (other_buffers)
+    {
+        for (const auto& buf : BufferManager::instance())
+        {
+            if (buf.get() != &buffer and not (buf->flags() & Buffer::Flags::Debug))
+                add_candidates(*buf);
         }
     }
+
     if (candidates.empty())
         return {};
     std::sort(candidates.begin(), candidates.end());
@@ -374,7 +382,7 @@ InsertCompletion complete_line(const SelectionList& sels, const OptionManager& o
 }
 
 InsertCompleter::InsertCompleter(Context& context)
-    : m_context(context), m_options(context.options())
+    : m_context(context), m_options(context.options()), m_faces(context.faces())
 {
     m_options.register_watcher(*this);
 }
@@ -384,13 +392,13 @@ InsertCompleter::~InsertCompleter()
     m_options.unregister_watcher(*this);
 }
 
-void InsertCompleter::select(int offset, Vector<Key>& keystrokes)
+void InsertCompleter::select(int index, bool relative, Vector<Key>& keystrokes)
 {
     if (not setup_ifn())
         return;
 
     auto& buffer = m_context.buffer();
-    m_current_candidate = (m_current_candidate + offset) % (int)m_completions.candidates.size();
+    m_current_candidate = (relative ? m_current_candidate + index : index) % (int)m_completions.candidates.size();
     if (m_current_candidate < 0)
         m_current_candidate += m_completions.candidates.size();
     const InsertCompletion::Candidate& candidate = m_completions.candidates[m_current_candidate];
@@ -451,13 +459,14 @@ void InsertCompleter::select(int offset, Vector<Key>& keystrokes)
     }
 }
 
-void InsertCompleter::update()
+void InsertCompleter::update(bool allow_implicit)
 {
     if (m_explicit_completer and try_complete(m_explicit_completer))
         return;
 
     reset();
-    setup_ifn();
+    if (allow_implicit)
+        setup_ifn();
 }
 
 void InsertCompleter::reset()
@@ -487,8 +496,10 @@ bool InsertCompleter::setup_ifn()
                 try_complete(complete_filename<true>))
                 return true;
             if (completer.mode == InsertCompleterDesc::Option and
-                try_complete([&](const SelectionList& sels, const OptionManager& options) {
-                   return complete_option(sels, options, *completer.param);
+                try_complete([&](const SelectionList& sels,
+                                 const OptionManager& options,
+                                 const FaceRegistry& faces) {
+                   return complete_option(sels, options, faces, *completer.param);
                 }))
                 return true;
             if (completer.mode == InsertCompleterDesc::Word and
@@ -500,7 +511,12 @@ bool InsertCompleter::setup_ifn()
                 try_complete(complete_word<true>))
                 return true;
             if (completer.mode == InsertCompleterDesc::Line and
-                try_complete(complete_line))
+                *completer.param == "buffer" and
+                try_complete(complete_line<false>))
+                return true;
+            if (completer.mode == InsertCompleterDesc::Line and
+                *completer.param == "all" and
+                try_complete(complete_line<true>))
                 return true;
         }
         return false;
@@ -549,7 +565,7 @@ bool InsertCompleter::try_complete(Func complete_func)
     auto& sels = m_context.selections();
     try
     {
-        m_completions = complete_func(sels, m_options);
+        m_completions = complete_func(sels, m_options, m_faces);
     }
     catch (runtime_error& e)
     {
@@ -584,10 +600,16 @@ void InsertCompleter::explicit_word_all_complete()
     m_explicit_completer = complete_word<true>;
 }
 
-void InsertCompleter::explicit_line_complete()
+void InsertCompleter::explicit_line_buffer_complete()
 {
-    try_complete(complete_line);
-    m_explicit_completer = complete_line;
+    try_complete(complete_line<false>);
+    m_explicit_completer = complete_line<false>;
+}
+
+void InsertCompleter::explicit_line_all_complete()
+{
+    try_complete(complete_line<true>);
+    m_explicit_completer = complete_line<true>;
 }
 
 }

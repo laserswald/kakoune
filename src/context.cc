@@ -70,10 +70,10 @@ void Context::set_window(Window& window)
     m_window.reset(&window);
 }
 
-void Context::print_status(DisplayLine status, bool immediate) const
+void Context::print_status(DisplayLine status) const
 {
     if (has_client())
-        client().print_status(std::move(status), immediate);
+        client().print_status(std::move(status));
 }
 
 void JumpList::push(SelectionList jump)
@@ -96,7 +96,7 @@ const SelectionList& JumpList::forward(Context& context, int count)
         res.update();
         context.print_status({ format("jumped to #{} ({})",
                                m_current, m_jumps.size() - 1),
-                               get_face("Information") });
+                               context.faces()["Information"] });
         return res;
     }
     throw runtime_error("no next jump");
@@ -117,7 +117,7 @@ const SelectionList& JumpList::backward(Context& context, int count)
         res.update();
         context.print_status({ format("jumped to #{} ({})",
                                m_current, m_jumps.size() - 1),
-                               get_face("Information") });
+                               context.faces()["Information"] });
         return res;
     }
     if (m_current != 0)
@@ -133,7 +133,7 @@ const SelectionList& JumpList::backward(Context& context, int count)
         res.update();
         context.print_status({ format("jumped to #{} ({})",
                                m_current, m_jumps.size() - 1),
-                               get_face("Information") });
+                               context.faces()["Information"] });
         return res;
     }
     throw runtime_error("no previous jump");

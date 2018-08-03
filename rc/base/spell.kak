@@ -9,13 +9,13 @@ Formats of language supported:
  - ISO language code, e.g. 'en'
  - language code above followed by a dash or underscore with an ISO country code, e.g. 'en-US'} \
     spell %{
-    try %{ add-highlighter window ranges 'spell_regions' }
-    %sh{
+    try %{ add-highlighter window/ ranges 'spell_regions' }
+    evaluate-commands %sh{
         file=$(mktemp -d "${TMPDIR:-/tmp}"/kak-spell.XXXXXXXX)/buffer
-        printf 'eval -no-hooks write %s\n' "${file}"
+        printf 'eval -no-hooks write -sync %s\n' "${file}"
         printf 'set-option buffer spell_tmp_file %s\n' "${file}"
     }
-    %sh{
+    evaluate-commands %sh{
         if [ $# -ge 1 ]; then
             if [ ${#1} -ne 2 ] && [ ${#1} -ne 5 ]; then
                 echo "echo -markup '{Error}Invalid language code (examples of expected format: en, en_US, en-US)'"
@@ -42,14 +42,14 @@ Formats of language supported:
                             fi
                             word=$(printf %s\\n "$line" | cut -d ' ' -f 2)
                             len=$(printf %s "$word" | wc -c)
-                            regions="$regions:$line_num.$pos+${len}|Error"
+                            regions="$regions $line_num.$pos+${len}|Error"
                             ;;
                         '') line_num=$((line_num + 1));;
                         \*) ;;
                         *) printf 'echo -markup %%{{Error}%s}\n' "${line}" | kak -p "${kak_session}";;
                     esac
                 done
-                printf 'set-option "buffer=%s" spell_regions %%{%s}' "${kak_bufname}" "${regions}" \
+                printf 'set-option "buffer=%s" spell_regions %s' "${kak_bufname}" "${regions}" \
                     | kak -p "${kak_session}"
             }
             rm -rf $(dirname "$kak_opt_spell_tmp_file")
@@ -57,20 +57,21 @@ Formats of language supported:
     }
 }
 
-define-command spell-next %{ %sh{
+define-command spell-next %{ evaluate-commands %sh{
     anchor_line="${kak_selection_desc%%.*}"
     anchor_col="${kak_selection_desc%%,*}"
     anchor_col="${anchor_col##*.}"
 
-    start_first="${kak_opt_spell_regions#*:}"
+    start_first="${kak_opt_spell_regions#* }"
     start_first="${start_first%%|*}"
+    start_first="${start_first#\'}"
 
     find_next_word_desc() {
         ## XXX: the `spell` command adds sorted selection descriptions to the range
         printf %s\\n "${1}" \
-            | sed -e 's/^[0-9]*://' -e 's/|[^:]*//g' -e 's/,/ /g' \
-            | tr ':' '\n' \
-            | while read -r start end; do
+            | sed -e "s/'//g" -e 's/^[0-9]* //' -e 's/|[^ ]*//g' \
+            | tr ' ' '\n' \
+            | while IFS=, read -r start end; do
                 start_line="${start%.*}"
                 start_col="${start#*.}"
                 end_line="${end%.*}"
@@ -101,7 +102,7 @@ define-command spell-next %{ %sh{
     fi
 } }
 
-define-command spell-replace %{ %sh{
+define-command spell-replace %{ evaluate-commands %sh{
     if [ -n "$kak_opt_spell_lang" ]; then
         options="-l '$kak_opt_spell_lang'"
     fi
@@ -109,7 +110,7 @@ define-command spell-replace %{ %sh{
     menu=$(printf %s "${suggestions#?}" | awk -F', ' '
         {
             for (i=1; i<=NF; i++)
-                printf "%s", "%{"$i"}" "%{execute-keys -itersel c"$i"<esc>be}"
+                printf "%s", "%{"$i"}" "%{execute-keys -itersel %{c"$i"<esc>be}}"
         }
     ')
     printf 'try %%{ menu -auto-single %s }' "${menu}"

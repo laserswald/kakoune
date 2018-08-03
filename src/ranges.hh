@@ -5,6 +5,7 @@
 #include <utility>
 #include <iterator>
 #include <numeric>
+#include <functional>
 
 #include "constexpr_utils.hh"
 
@@ -55,6 +56,24 @@ using IteratorOf = decltype(std::begin(std::declval<Range>()));
 template<typename Range>
 using ValueOf = typename Range::value_type;
 
+template<typename Range>
+struct SkipView
+{
+    auto begin() const { return std::next(std::begin(m_range), m_skip_count); }
+    auto end()   const { return std::end(m_range); }
+
+    Range m_range;
+    size_t m_skip_count;
+};
+
+inline auto skip(size_t count)
+{
+    return make_view_factory([count](auto&& range) {
+        using Range = decltype(range);
+        return SkipView<decay_range<Range>>{std::forward<Range>(range), count};
+    });
+}
+
 template<typename Range, typename Filter>
 struct FilterView
 {
@@ -63,8 +82,8 @@ struct FilterView
     struct Iterator : std::iterator<std::forward_iterator_tag,
                                     typename std::iterator_traits<RangeIt>::value_type>
     {
-        Iterator(const FilterView& view, RangeIt it, RangeIt end)
-            : m_it{std::move(it)}, m_end{std::move(end)}, m_view{view}
+        Iterator(Filter& filter, RangeIt it, RangeIt end)
+            : m_it{std::move(it)}, m_end{std::move(end)}, m_filter{&filter}
         {
             do_filter();
         }
@@ -88,17 +107,17 @@ struct FilterView
     private:
         void do_filter()
         {
-            while (m_it != m_end and not m_view.m_filter(*m_it))
+            while (m_it != m_end and not (*m_filter)(*m_it))
                 ++m_it;
         }
 
         RangeIt m_it;
         RangeIt m_end;
-        const FilterView& m_view;
+        Filter* m_filter;
     };
 
-    Iterator begin() const { return {*this, std::begin(m_range), std::end(m_range)}; }
-    Iterator end()   const { return {*this, std::end(m_range), std::end(m_range)}; }
+    Iterator begin() const { return {m_filter, std::begin(m_range), std::end(m_range)}; }
+    Iterator end()   const { return {m_filter, std::end(m_range), std::end(m_range)}; }
 
     Range m_range;
     mutable Filter m_filter;
@@ -119,34 +138,45 @@ struct TransformView
     using RangeIt = IteratorOf<Range>;
     using ResType = decltype(std::declval<Transform>()(*std::declval<RangeIt>()));
 
-    struct Iterator : std::iterator<std::forward_iterator_tag, std::remove_reference_t<ResType>>
+    struct Iterator
     {
-        Iterator(const TransformView& view, RangeIt it)
-            : m_it{std::move(it)}, m_view{view} {}
+        using iterator_category = typename std::iterator_traits<RangeIt>::iterator_category;
+        using value_type = std::remove_reference_t<ResType>;
+        using difference_type = typename std::iterator_traits<RangeIt>::difference_type;
+        using pointer = value_type*;
+        using reference = value_type&;
 
-        decltype(auto) operator*() { return m_view.m_transform(*m_it); }
+        Iterator(Transform& transform, RangeIt it)
+            : m_it{std::move(it)}, m_transform{&transform} {}
+
+        decltype(auto) operator*() { return (*m_transform)(*m_it); }
+        decltype(auto) operator[](difference_type i) const { return (*m_transform)(m_it[i]); }
+
         Iterator& operator++() { ++m_it; return *this; }
         Iterator operator++(int) { auto copy = *this; ++m_it; return copy; }
 
-        friend bool operator==(const Iterator& lhs, const Iterator& rhs)
-        {
-            return lhs.m_it == rhs.m_it;
-        }
+        Iterator& operator--() { --m_it; return *this; }
+        Iterator operator--(int) { auto copy = *this; --m_it; return copy; }
 
-        friend bool operator!=(const Iterator& lhs, const Iterator& rhs)
-        {
-            return not (lhs == rhs);
-        }
+        Iterator& operator+=(difference_type diff) { m_it += diff; return *this; }
+        Iterator& operator-=(difference_type diff) { m_it -= diff; return *this; }
+
+        Iterator operator+(difference_type diff) { return {*m_transform, m_it + diff}; }
+        Iterator operator-(difference_type diff) { return {*m_transform, m_it - diff}; }
+
+        friend bool operator==(const Iterator& lhs, const Iterator& rhs) { return lhs.m_it == rhs.m_it; }
+        friend bool operator!=(const Iterator& lhs, const Iterator& rhs) { return not (lhs == rhs); }
+        friend difference_type operator-(const Iterator& lhs, const Iterator& rhs) { return lhs.m_it - rhs.m_it; }
 
         RangeIt base() const { return m_it; }
 
     private:
         RangeIt m_it;
-        const TransformView& m_view;
+        Transform* m_transform;
     };
 
-    Iterator begin() const { return {*this, std::begin(m_range)}; }
-    Iterator end()   const { return {*this, std::end(m_range)}; }
+    Iterator begin() const { return {m_transform, std::begin(m_range)}; }
+    Iterator end()   const { return {m_transform, std::end(m_range)}; }
 
     Range m_range;
     mutable Transform m_transform;
@@ -159,6 +189,12 @@ inline auto transform(Transform t)
         using Range = decltype(range);
         return TransformView<decay_range<Range>, Transform>{std::forward<Range>(range), std::move(t)};
     });
+}
+
+template<typename M, typename T>
+inline auto transform(M T::*m)
+{
+    return transform(std::mem_fn(std::forward<decltype(m)>(m)));
 }
 
 template<typename Range, bool escape = false,
@@ -249,8 +285,8 @@ auto split(Element separator, Element escaper)
 template<typename Range1, typename Range2>
 struct ConcatView
 {
-    using RangeIt1 = decltype(begin(std::declval<Range1>()));
-    using RangeIt2 = decltype(begin(std::declval<Range2>()));
+    using RangeIt1 = decltype(std::declval<Range1>().begin());
+    using RangeIt2 = decltype(std::declval<Range2>().begin());
     using ValueType = typename std::common_type_t<typename std::iterator_traits<RangeIt1>::value_type,
                                                   typename std::iterator_traits<RangeIt2>::value_type>;
 
@@ -263,7 +299,7 @@ struct ConcatView
             : m_it1(std::move(it1)), m_end1(std::move(end1)),
               m_it2(std::move(it2)) {}
 
-        ValueType operator*() { return is2() ? *m_it2 : *m_it1; }
+        decltype(auto) operator*() { return is2() ? *m_it2 : *m_it1; }
         Iterator& operator++() { if (is2()) ++m_it2; else ++m_it1; return *this; }
         Iterator operator++(int) { auto copy = *this; ++*this; return copy; }
 
@@ -293,12 +329,12 @@ struct ConcatView
     Iterator end()   const { return {m_range1.end(), m_range1.end(), m_range2.end()}; }
 
 private:
-    Range1& m_range1;
-    Range2& m_range2;
+    Range1 m_range1;
+    Range2 m_range2;
 };
 
 template<typename Range1, typename Range2>
-ConcatView<Range1, Range2> concatenated(Range1&& range1, Range2&& range2)
+ConcatView<decay_range<Range1>, decay_range<Range2>> concatenated(Range1&& range1, Range2&& range2)
 {
     return {range1, range2};
 }
@@ -325,10 +361,17 @@ bool contains(Range&& range, const T& value)
 }
 
 template<typename Range, typename T>
-bool contains_that(Range&& range, T op)
+bool all_of(Range&& range, T op)
 {
-    using std::end;
-    return find_if(range, op) != end(range);
+    using std::begin; using std::end;
+    return std::all_of(begin(range), end(range), op);
+}
+
+template<typename Range, typename T>
+bool any_of(Range&& range, T op)
+{
+    using std::begin; using std::end;
+    return std::any_of(begin(range), end(range), op);
 }
 
 template<typename Range, typename U>
@@ -348,6 +391,20 @@ Init accumulate(Range&& c, Init&& init, BinOp&& op)
 {
     using std::begin; using std::end;
     return std::accumulate(begin(c), end(c), init, op);
+}
+
+template<typename Range, typename Compare, typename Func>
+void for_n_best(Range&& c, size_t count, Compare&& compare, Func&& func)
+{
+    using std::begin; using std::end;
+    auto b = begin(c), e = end(c);
+    std::make_heap(b, e, compare);
+    while (count > 0 and b != e)
+    {
+        if (func(*b))
+            --count;
+        std::pop_heap(b, e--, compare);
+    }
 }
 
 template<typename Container>

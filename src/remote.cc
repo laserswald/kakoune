@@ -53,7 +53,7 @@ public:
         write((uint32_t)0); // message size, to be patched on write
     }
 
-    ~MsgWriter() noexcept(false)
+    ~MsgWriter()
     {
         uint32_t count = (uint32_t)m_buffer.size() - m_start;
         memcpy(m_buffer.data() + m_start + sizeof(MessageType), &count, sizeof(uint32_t));
@@ -67,6 +67,7 @@ public:
     template<typename T>
     void write(const T& val)
     {
+        static_assert(std::is_trivially_copyable<T>::value, "");
         write((const char*)&val, sizeof(val));
     }
 
@@ -173,7 +174,7 @@ public:
 
     uint32_t size() const
     {
-        kak_assert(m_write_pos >= header_size); 
+        kak_assert(m_write_pos >= header_size);
         uint32_t res;
         memcpy(&res, m_stream.data() + sizeof(MessageType), sizeof(uint32_t));
         return res;
@@ -181,7 +182,7 @@ public:
 
     MessageType type() const
     {
-        kak_assert(m_write_pos >= header_size); 
+        kak_assert(m_write_pos >= header_size);
         return *reinterpret_cast<const MessageType*>(m_stream.data());
     }
 
@@ -196,15 +197,10 @@ public:
     template<typename T>
     T read()
     {
-        union U
-        {
-            T object;
-            alignas(T) char data[sizeof(T)];
-            U() {}
-            ~U() { object.~T(); }
-        } u;
-        read(u.data, sizeof(T));
-        return u.object;
+        static_assert(std::is_trivially_copyable<T>::value, "");
+        T res;
+        read(reinterpret_cast<char*>(&res), sizeof(T));
+        return res;
     }
 
     template<typename T>
@@ -294,15 +290,14 @@ Color MsgReader::read<Color>()
 template<>
 DisplayAtom MsgReader::read<DisplayAtom>()
 {
-    DisplayAtom atom(read<String>());
-    atom.face = read<Face>();
-    return atom;
+    String content = read<String>();
+    return {std::move(content), read<Face>()};
 }
 
 template<>
 DisplayLine MsgReader::read<DisplayLine>()
 {
-    return DisplayLine(read_vector<DisplayAtom>());
+    return {read_vector<DisplayAtom>()};
 }
 
 template<>
@@ -320,6 +315,7 @@ public:
     RemoteUI(int socket, DisplayCoord dimensions);
     ~RemoteUI() override;
 
+    bool is_ok() const override { return m_socket_watcher.fd() != -1; }
     void menu_show(ConstArrayView<DisplayLine> choices,
                    DisplayCoord anchor, Face fg, Face bg,
                    MenuStyle style) override;
@@ -350,9 +346,6 @@ public:
 
     void set_ui_options(const Options& options) override;
 
-    void set_client(Client* client) { m_client = client; }
-    Client* client() const { return m_client.get(); }
-
     void exit(int status);
 
 private:
@@ -361,8 +354,6 @@ private:
     DisplayCoord  m_dimensions;
     OnKeyCallback m_on_key;
     RemoteBuffer  m_send_buffer;
-
-    SafePtr<Client> m_client;
 };
 
 static bool send_data(int fd, RemoteBuffer& buffer)
@@ -379,7 +370,7 @@ static bool send_data(int fd, RemoteBuffer& buffer)
 
 RemoteUI::RemoteUI(int socket, DisplayCoord dimensions)
     : m_socket_watcher(socket,  FdEvents::Read | FdEvents::Write,
-                       [this](FDWatcher& watcher, FdEvents events, EventMode mode) {
+                       [this](FDWatcher& watcher, FdEvents events, EventMode) {
           const int sock = watcher.fd();
           try
           {
@@ -395,8 +386,8 @@ RemoteUI::RemoteUI(int socket, DisplayCoord dimensions)
 
                    if (m_reader.type() != MessageType::Key)
                    {
-                      ClientManager::instance().remove_client(*m_client, false, -1);
-                      return;
+                       m_socket_watcher.close_fd();
+                       return;
                    }
 
                    auto key = m_reader.read<Key>();
@@ -409,7 +400,7 @@ RemoteUI::RemoteUI(int socket, DisplayCoord dimensions)
           catch (const disconnected& err)
           {
               write_to_debug_buffer(format("Error while transfering remote messages: {}", err.what()));
-              ClientManager::instance().remove_client(*m_client, false, -1);
+              m_socket_watcher.close_fd();
           }
       }),
       m_dimensions(dimensions)
@@ -539,7 +530,7 @@ static sockaddr_un session_addr(StringView session)
     addr.sun_family = AF_UNIX;
     auto slash_count = std::count(session.begin(), session.end(), '/');
     if (slash_count > 1)
-        throw runtime_error{"Session names are either <user>/<name> or <name>"};
+        throw runtime_error{"session names are either <user>/<name> or <name>"};
     else if (slash_count == 1)
         format_to(addr.sun_path, "{}/kakoune/{}", tmpdir(), session);
     else
@@ -566,7 +557,7 @@ bool check_session(StringView session)
     return connect(sock, (sockaddr*)&addr, sizeof(addr.sun_path)) != -1;
 }
 
-RemoteClient::RemoteClient(StringView session, std::unique_ptr<UserInterface>&& ui,
+RemoteClient::RemoteClient(StringView session, StringView name, std::unique_ptr<UserInterface>&& ui,
                            int pid, const EnvVarMap& env_vars, StringView init_command,
                            Optional<BufferCoord> init_coord)
     : m_ui(std::move(ui))
@@ -576,6 +567,7 @@ RemoteClient::RemoteClient(StringView session, std::unique_ptr<UserInterface>&& 
     {
         MsgWriter msg{m_send_buffer, MessageType::Connect};
         msg.write(pid);
+        msg.write(name);
         msg.write(init_command);
         msg.write(init_coord);
         msg.write(m_ui->dimensions());
@@ -676,6 +668,11 @@ RemoteClient::RemoteClient(StringView session, std::unique_ptr<UserInterface>&& 
     }});
 }
 
+bool RemoteClient::is_ui_ok() const
+{
+    return m_ui->is_ok();
+}
+
 void send_command(StringView session, StringView command)
 {
     int sock = connect_to(session);
@@ -723,16 +720,16 @@ private:
             case MessageType::Connect:
             {
                 auto pid = m_reader.read<int>();
+                auto name = m_reader.read<String>();
                 auto init_cmds = m_reader.read<String>();
                 auto init_coord = m_reader.read_optional<BufferCoord>();
                 auto dimensions = m_reader.read<DisplayCoord>();
                 auto env_vars = m_reader.read_hash_map<String, String, MemoryDomain::EnvVars>();
                 auto* ui = new RemoteUI{sock, dimensions};
-                if (auto* client = ClientManager::instance().create_client(
-                                       std::unique_ptr<UserInterface>(ui), pid,
-                                       std::move(env_vars), init_cmds, init_coord,
-                                       [ui](int status) { ui->exit(status); }))
-                    ui->set_client(client);
+                ClientManager::instance().create_client(
+                    std::unique_ptr<UserInterface>(ui), pid, std::move(name),
+                    std::move(env_vars), init_cmds, init_coord,
+                    [ui](int status) { ui->exit(status); });
 
                 Server::instance().remove_accepter(this);
                 break;
@@ -755,7 +752,7 @@ private:
                 break;
             }
             default:
-                write_to_debug_buffer("Invalid introduction message received");
+                write_to_debug_buffer("invalid introduction message received");
                 close(sock);
                 Server::instance().remove_accepter(this);
             }
@@ -775,8 +772,8 @@ private:
 Server::Server(String session_name)
     : m_session{std::move(session_name)}
 {
-    if (contains(m_session, '/'))
-        throw runtime_error{"Cannot create sessions with '/' in their name"};
+    if (not all_of(m_session, is_identifier))
+        throw runtime_error{format("invalid session name: '{}'", session_name)};
 
     int listen_sock = socket(AF_UNIX, SOCK_STREAM, 0);
     fcntl(listen_sock, F_SETFD, FD_CLOEXEC);
@@ -798,7 +795,7 @@ Server::Server(String session_name)
        throw runtime_error(format("unable to listen on socket '{}': {}",
                                   addr.sun_path, strerror(errno)));
 
-    auto accepter = [this](FDWatcher& watcher, FdEvents, EventMode mode) {
+    auto accepter = [this](FDWatcher& watcher, FdEvents, EventMode) {
         sockaddr_un client_addr;
         socklen_t   client_addr_len = sizeof(sockaddr_un);
         int sock = accept(watcher.fd(), (sockaddr*) &client_addr,
@@ -814,8 +811,8 @@ Server::Server(String session_name)
 
 bool Server::rename_session(StringView name)
 {
-    if (contains(name, '/'))
-        throw runtime_error{"Cannot create sessions with '/' in their name"};
+    if (not all_of(name, is_identifier))
+        throw runtime_error{format("invalid session name: '{}'", name)};
 
     String old_socket_file = format("{}/kakoune/{}/{}", tmpdir(),
                                     get_user_name(geteuid()), m_session);

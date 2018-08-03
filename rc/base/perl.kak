@@ -11,18 +11,14 @@ hook global BufCreate .*\.p[lm] %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code perl \
-    command '(?<!\$)(?<!\\)`' (?<!\\)(\\\\)*` '' \
-    double_string '(?<!\$)(?<!\\)"' (?<!\\)(\\\\)*" '' \
-    single_string "(?<!\\$)(?<!\\\\)'" (?<!\\)(\\\\)*' '' \
-    comment '(?<!\$)(?<!\\)#' $ ''
+add-highlighter shared/perl regions
+add-highlighter shared/perl/code default-region group
+add-highlighter shared/perl/command       region (?<!\$)(?<!\\)`   (?<!\\)(\\\\)*` fill magenta
+add-highlighter shared/perl/double_string region (?<!\$)(?<!\\)"   (?<!\\)(\\\\)*" fill string
+add-highlighter shared/perl/single_string region (?<!\$)(?<!\\\\)' (?<!\\)(\\\\)*' fill string
+add-highlighter shared/perl/comment       region (?<!\$)(?<!\\)#   $               fill comment
 
-add-highlighter shared/perl/command fill magenta
-add-highlighter shared/perl/double_string fill string
-add-highlighter shared/perl/single_string fill string
-add-highlighter shared/perl/comment fill comment
-
-%sh{
+evaluate-commands %sh{
     # Grammar
     keywords="else|lock|qw|elsif|lt|qx|eq|exp|ne|sub|for|no|my|not|tr|goto|and|foreach|or|break|exit|unless|cmp|ge|package|until|continue|gt|while|if|qq|xor|do|le|qr|return"
     attributes="END|AUTOLOAD|BEGIN|CHECK|UNITCHECK|INIT|DESTROY"
@@ -41,31 +37,31 @@ add-highlighter shared/perl/comment fill comment
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=perl %{
-        set-option window static_words '${keywords}:${attributes}:${values}'
-    }" | sed 's,|,:,g'
+        set-option window static_words ${keywords} ${attributes} ${values}
+    }" | tr '|' ' '
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/perl/code regex \b(${keywords})\b 0:keyword
-        add-highlighter shared/perl/code regex \b(${attributes})\b 0:attribute
-        add-highlighter shared/perl/code regex \b(${values})\b 0:value
+        add-highlighter shared/perl/code/ regex \b(${keywords})\b 0:keyword
+        add-highlighter shared/perl/code/ regex \b(${attributes})\b 0:attribute
+        add-highlighter shared/perl/code/ regex \b(${values})\b 0:value
     "
 }
 
-add-highlighter shared/perl/code regex (?!\$)-?([0-9]*\.(?!0[xXbB]))?\b([0-9]+|0[xX][0-9a-fA-F]+|0[bb][01_]+)\.?([eE][+-]?[0-9]+)?i?\b 0:value
-add-highlighter shared/perl/code regex %{\$!|\$"|\$#|\$\$|\$%|\$&|\$'|\$\(|\$\)|\$\*|\$\+|\$,|\$_|\$-|\$`|\$\.|\$/|\$:|\$;|\$<|\$=|\$>|\$\?|\$@|\$\[|\$\\|\$\]|\$\^|\$\||\$~|%!|@\+|@-|@_} 0:value
-add-highlighter shared/perl/code regex (%ENV|%INC|%OVERLOAD|%SIG|@ARGV|@INC|@LAST_MATCH_START) 0:value
-add-highlighter shared/perl/code regex %{%\^(H)\b} 0:value
-add-highlighter shared/perl/code regex \$\^(S|T|V|W|X|A|C|D|E|F|H|I|L|M|N|O|P|R)\b 0:value
-add-highlighter shared/perl/code regex \$\^(RE_TRIE_MAXBUF|TAINT|UNICODE|UTF8LOCALE|WARNING_BITS|WIDE_SYSTEM_CALLS|CHILD_ERROR_NATIVE|ENCODING|OPEN|RE_DEBUG_FLAGS)\b 0:value
+add-highlighter shared/perl/code/ regex (?!\$)-?([0-9]*\.(?!0[xXbB]))?\b([0-9]+|0[xX][0-9a-fA-F]+|0[bb][01_]+)\.?([eE][+-]?[0-9]+)?i?\b 0:value
+add-highlighter shared/perl/code/ regex %{\$!|\$"|\$#|\$\$|\$%|\$&|\$'|\$\(|\$\)|\$\*|\$\+|\$,|\$_|\$-|\$`|\$\.|\$/|\$:|\$;|\$<|\$=|\$>|\$\?|\$@|\$\[|\$\\|\$\]|\$\^|\$\||\$~|%!|@\+|@-|@_} 0:value
+add-highlighter shared/perl/code/ regex (%ENV|%INC|%OVERLOAD|%SIG|@ARGV|@INC|@LAST_MATCH_START) 0:value
+add-highlighter shared/perl/code/ regex %{%\^(H)\b} 0:value
+add-highlighter shared/perl/code/ regex \$\^(S|T|V|W|X|A|C|D|E|F|H|I|L|M|N|O|P|R)\b 0:value
+add-highlighter shared/perl/code/ regex \$\^(RE_TRIE_MAXBUF|TAINT|UNICODE|UTF8LOCALE|WARNING_BITS|WIDE_SYSTEM_CALLS|CHILD_ERROR_NATIVE|ENCODING|OPEN|RE_DEBUG_FLAGS)\b 0:value
 
-add-highlighter shared/perl/code regex \$[0-9]+ 0:attribute
-add-highlighter shared/perl/code regex \b-(B|b|C|c|d|e|f|g|k|l|M|O|o|p|r|R|S|s|T|t|u|w|W|X|x|z)\b 0:attribute
+add-highlighter shared/perl/code/ regex \$[0-9]+ 0:attribute
+add-highlighter shared/perl/code/ regex \b-(B|b|C|c|d|e|f|g|k|l|M|O|o|p|r|R|S|s|T|t|u|w|W|X|x|z)\b 0:attribute
 
-add-highlighter shared/perl/code regex \$[a-zA-Z_][a-zA-Z0-9_]* 0:variable
+add-highlighter shared/perl/code/ regex \$[a-zA-Z_][a-zA-Z0-9_]* 0:variable
 
-add-highlighter shared/perl/code regex \$(a|b|LAST_REGEXP_CODE_RESULT|LIST_SEPARATOR|MATCH|MULTILINE_MATCHING|NR|OFMT|OFS|ORS|OS_ERROR|OSNAME|OUTPUT_AUTO_FLUSH|OUTPUT_FIELD_SEPARATOR|OUTPUT_RECORD_SEPARATOR)\b 0:value
-add-highlighter shared/perl/code regex \$(LAST_REGEXP_CODE_RESULT|LIST_SEPARATOR|MATCH|MULTILINE_MATCHING|NR|OFMT|OFS|ORS|OS_ERROR|OSNAME|OUTPUT_AUTO_FLUSH|OUTPUT_FIELD_SEPARATOR|OUTPUT_RECORD_SEPARATOR|PERL_VERSION|ACCUMULATOR|PERLDB|ARG|PID|ARGV|POSTMATCH|PREMATCH|BASETIME|PROCESS_ID|CHILD_ERROR|PROGRAM_NAME|COMPILING|REAL_GROUP_ID|DEBUGGING|REAL_USER_ID|EFFECTIVE_GROUP_ID|RS|EFFECTIVE_USER_ID|SUBSCRIPT_SEPARATOR|EGID|SUBSEP|ERRNO|SYSTEM_FD_MAX|EUID|UID|EVAL_ERROR|WARNING|EXCEPTIONS_BEING_CAUGHT|EXECUTABLE_NAME|EXTENDED_OS_ERROR|FORMAT_FORMFEED|FORMAT_LINE_BREAK_CHARACTERS|FORMAT_LINES_LEFT|FORMAT_LINES_PER_PAGE|FORMAT_NAME|FORMAT_PAGE_NUMBER|FORMAT_TOP_NAME|GID|INPLACE_EDIT|INPUT_LINE_NUMBER|INPUT_RECORD_SEPARATOR|LAST_MATCH_END|LAST_PAREN_MATCH)\b 0:value
+add-highlighter shared/perl/code/ regex \$(a|b|LAST_REGEXP_CODE_RESULT|LIST_SEPARATOR|MATCH|MULTILINE_MATCHING|NR|OFMT|OFS|ORS|OS_ERROR|OSNAME|OUTPUT_AUTO_FLUSH|OUTPUT_FIELD_SEPARATOR|OUTPUT_RECORD_SEPARATOR)\b 0:value
+add-highlighter shared/perl/code/ regex \$(LAST_REGEXP_CODE_RESULT|LIST_SEPARATOR|MATCH|MULTILINE_MATCHING|NR|OFMT|OFS|ORS|OS_ERROR|OSNAME|OUTPUT_AUTO_FLUSH|OUTPUT_FIELD_SEPARATOR|OUTPUT_RECORD_SEPARATOR|PERL_VERSION|ACCUMULATOR|PERLDB|ARG|PID|ARGV|POSTMATCH|PREMATCH|BASETIME|PROCESS_ID|CHILD_ERROR|PROGRAM_NAME|COMPILING|REAL_GROUP_ID|DEBUGGING|REAL_USER_ID|EFFECTIVE_GROUP_ID|RS|EFFECTIVE_USER_ID|SUBSCRIPT_SEPARATOR|EGID|SUBSEP|ERRNO|SYSTEM_FD_MAX|EUID|UID|EVAL_ERROR|WARNING|EXCEPTIONS_BEING_CAUGHT|EXECUTABLE_NAME|EXTENDED_OS_ERROR|FORMAT_FORMFEED|FORMAT_LINE_BREAK_CHARACTERS|FORMAT_LINES_LEFT|FORMAT_LINES_PER_PAGE|FORMAT_NAME|FORMAT_PAGE_NUMBER|FORMAT_TOP_NAME|GID|INPLACE_EDIT|INPUT_LINE_NUMBER|INPUT_RECORD_SEPARATOR|LAST_MATCH_END|LAST_PAREN_MATCH)\b 0:value
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -81,7 +77,7 @@ define-command -hidden perl-indent-on-new-line %~
         # align to opening paren of previous line
         try %{ execute-keys -draft [( <a-k> \A\([^\n]+\n[^\n]*\n?\z <ret> s \A\(\h*.|.\z <ret> '<a-;>' & }
         # copy // comments prefix
-        try %{ execute-keys -draft \;<c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o><c-o>P<esc> }
+        try %{ execute-keys -draft \;<c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o>P<esc> }
         # indent after a switch's case/default statements
         try %[ execute-keys -draft k<a-x> <a-k> ^\h*(case|default).*:$ <ret> j<a-gt> ]
         # indent after if|else|while|for
@@ -91,7 +87,7 @@ define-command -hidden perl-indent-on-new-line %~
 
 define-command -hidden perl-indent-on-opening-curly-brace %[
     # align indent with opening paren when { is entered on a new line after the closing paren
-    try %[ execute-keys -draft -itersel h<a-F>)M <a-k> \A\(.*\)\h*\n\h*\{\' <ret> s \A|.\z <ret> 1<a-&> ]
+    try %[ execute-keys -draft -itersel h<a-F>)M <a-k> \A\(.*\)\h*\n\h*\{) <ret> s \A|.\z <ret> 1<a-&> ]
 ]
 
 define-command -hidden perl-indent-on-closing-curly-brace %[
@@ -102,11 +98,11 @@ define-command -hidden perl-indent-on-closing-curly-brace %[
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group perl-highlight global WinSetOption filetype=perl %{ add-highlighter window ref perl }
+hook -group perl-highlight global WinSetOption filetype=perl %{ add-highlighter window/perl ref perl }
 
 hook global WinSetOption filetype=perl %{
     # cleanup trailing whitespaces when exiting insert mode
-    hook window InsertEnd .* -group perl-hooks %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
+    hook window ModeChange insert:.* -group perl-hooks %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
     hook window InsertChar \n -group perl-indent perl-indent-on-new-line
     hook window InsertChar \{ -group perl-indent perl-indent-on-opening-curly-brace
     hook window InsertChar \} -group perl-indent perl-indent-on-closing-curly-brace

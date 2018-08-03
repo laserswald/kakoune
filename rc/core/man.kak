@@ -4,15 +4,15 @@ declare-option -docstring "name of the client in which documentation is to be di
 declare-option -hidden str manpage
 
 hook -group man-highlight global WinSetOption filetype=man %{
-    add-highlighter window group man-highlight
+    add-highlighter window/man-highlight group
     # Sections
-    add-highlighter window/man-highlight regex ^\S.*?$ 0:blue
+    add-highlighter window/man-highlight/ regex ^\S.*?$ 0:blue
     # Subsections
-    add-highlighter window/man-highlight regex '^ {3}\S.*?$' 0:default+b
+    add-highlighter window/man-highlight/ regex '^ {3}\S.*?$' 0:default+b
     # Command line options
-    add-highlighter window/man-highlight regex '^ {7}-[^\s,]+(,\s+-[^\s,]+)*' 0:yellow
+    add-highlighter window/man-highlight/ regex '^ {7}-[^\s,]+(,\s+-[^\s,]+)*' 0:yellow
     # References to other manpages
-    add-highlighter window/man-highlight regex [-a-zA-Z0-9_.]+\([a-z0-9]+\) 0:green
+    add-highlighter window/man-highlight/ regex [-a-zA-Z0-9_.]+\([a-z0-9]+\) 0:green
 }
 
 hook global WinSetOption filetype=man %{
@@ -27,7 +27,7 @@ hook global WinSetOption filetype=(?!man).* %{
     remove-hooks window man-hooks
 }
 
-define-command -hidden -params 2..3 man-impl %{ %sh{
+define-command -hidden -params 2..3 man-impl %{ evaluate-commands %sh{
     buffer_name="$1"
     shift
     manout=$(mktemp "${TMPDIR:-/tmp}"/kak-man-XXXXXX)
@@ -57,7 +57,7 @@ define-command -params ..1 \
   -docstring %{man [<page>]: manpage viewer wrapper
 If no argument is passed to the command, the selection will be used as page
 The page can be a word, or a word directly followed by a section number between parenthesis, e.g. kak(1)} \
-    man %{ %sh{
+    man %{ evaluate-commands %sh{
     subject=${1-$kak_selection}
 
     ## The completion suggestions display the page number, strip them if present
@@ -69,5 +69,5 @@ The page can be a word, or a word directly followed by a section number between 
             ;;
     esac
 
-    printf %s\\n "evaluate-commands -collapse-jumps -try-client %opt{docsclient} man-impl *man* $pagenum $subject"
+    printf %s\\n "evaluate-commands -try-client %opt{docsclient} man-impl *man* $pagenum $subject"
 } }

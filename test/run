@@ -9,21 +9,18 @@ main() {
   kak_commands='
         set global autoreload yes
         set global autoinfo ""
-        set global autoshowcompl false
-        try %{ source rc }
+        set global auto_complete ""
         try %{
-            exec -save-regs / %{%s%\(\K[^)]+<ret><c-s>}
-            exec -draft ld
-            exec -draft <a-\;>hHd
-            exec i<c-u><esc><c-o>
+            exec -save-regs / %{%s%\(\K[^)]+\)<ret>a<backspace><esc>i<backspace><backspace><c-u><esc><a-;>}
         } catch %{ exec gg }
+        try %{ source rc }
         hook global RuntimeError .+ %{
             echo -debug -- error: %val{hook_param}
             eval -buffer *debug* write debug
             quit!
         }
-        try %{ exec "%sh{cat cmd}" }
-        exec <c-l>
+        try %{ exec -with-maps -with-hooks "%sh{cat cmd}" }
+        exec -with-hooks <c-l>
         eval -buffer *debug* write debug
         nop %sh{
           printf %s\\n "$kak_selections"      > selections
@@ -47,7 +44,7 @@ main() {
       [ -f $file ] && cp $file $work/$dir/
     done
     cd $work/$dir;
-    indent="$(echo "$dir/" | sed -e 's|[^/]*/\+|  |g')"
+    indent="$(echo "$dir/" | sed -e 's|[^/]*//*|  |g')"
     name=${PWD##*/}
     if [ ! -f cmd ]; then
       echo "$indent$name"
@@ -57,11 +54,14 @@ main() {
       continue
     fi
 
+    ui_in="${root}/${dir}/ui-in"
+    [ ! -f $ui_in ] && ui_in="/dev/null"
+
     number_tests=$(($number_tests + 1))
     touch in; cp in out
     session="kak-tests"
     rm -f $tmpdir/kakoune/$USER/$session
-    $root/../src/kak out -n -s "$session" -ui json -e "$kak_commands" > display
+    $root/../src/kak out -n -s "$session" -ui json -e "$kak_commands" > ui-out < "${ui_in}"
     retval=$?
     failed=0
     if [ ! -e error ]; then # failure not expected
@@ -70,7 +70,7 @@ main() {
         echo "$indent  Kakoune returned error $retval"
         failed=1
       else
-        for file in out selections state display; do
+        for file in out selections state ui-out; do
           if [ -f $root/$dir/$file ] && ! cmp -s $root/$dir/$file $file; then
             if [ $failed -eq 0 ]; then
               echo "$indent$name" | colorize $red $none

@@ -4,19 +4,21 @@
 #include "buffer.hh"
 #include "exception.hh"
 #include "flags.hh"
+#include "option_types.hh"
 #include "ranked_match.hh"
 #include "regex.hh"
 #include "string.hh"
 #include "unicode.hh"
 
 #include <cerrno>
-#include <cstring>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <dirent.h>
 #include <cstdlib>
+#include <cstring>
+#include <dirent.h>
+#include <fcntl.h>
+#include <pwd.h>
+#include <sys/mman.h>
 #include <sys/select.h>
+#include <unistd.h>
 
 #if defined(__FreeBSD__)
 #include <sys/sysctl.h>
@@ -47,11 +49,13 @@ public:
         : runtime_error(format("fd {}: {}", fd, error_desc)) {}
 };
 
-String parse_filename(StringView filename)
+String parse_filename(StringView filename, StringView buf_dir)
 {
     auto prefix = filename.substr(0_byte, 2_byte);
     if (prefix == "~" or prefix == "~/")
-        return getenv("HOME") + filename.substr(1_byte);
+        return homedir() + filename.substr(1_byte);
+    if ((prefix == "%" or prefix == "%/") and not buf_dir.empty())
+        return buf_dir + filename.substr(1_byte);
     return filename.str();
 }
 
@@ -66,6 +70,9 @@ std::pair<StringView, StringView> split_path(StringView path)
 
 String real_path(StringView filename)
 {
+    if (filename.empty())
+        return {};
+
     char buffer[PATH_MAX+1];
 
     StringView existing = filename;
@@ -73,22 +80,25 @@ String real_path(StringView filename)
 
     while (true)
     {
-        char* res = realpath(existing.zstr(), buffer);
-        if (res)
+        if (char* res = realpath(existing.zstr(), buffer))
         {
             if (non_existing.empty())
                 return res;
-            return format("{}/{}", res, non_existing);
+
+            StringView dir = res;
+            if (dir.substr(dir.length()-1_byte, 1_byte) == "/")
+                dir = dir.substr(0_byte, dir.length()-1_byte);
+            return format("{}/{}", dir, non_existing);
         }
 
-        auto it = find(existing.rbegin(), existing.rend(), '/');
+        auto it = find(existing.rbegin() + 1, existing.rend(), '/');
         if (it == existing.rend())
         {
             char cwd[1024];
             return format("{}/{}", getcwd(cwd, 1024), filename);
         }
 
-        existing = StringView{existing.begin(), it.base()-1};
+        existing = StringView{existing.begin(), it.base()};
         non_existing = StringView{it.base(), filename.end()};
     }
 }
@@ -105,10 +115,10 @@ String compact_path(StringView filename)
     if (prefix_match(real_filename, real_cwd))
         return real_filename.substr(real_cwd.length()).str();
 
-    const char* home = getenv("HOME");
-    if (home)
+    const StringView home = homedir();
+    if (not home.empty())
     {
-        ByteCount home_len = (int)strlen(home);
+        ByteCount home_len = home.length();
         if (real_filename.substr(0, home_len) == home)
             return "~" + real_filename.substr(home_len);
     }
@@ -123,6 +133,14 @@ StringView tmpdir()
         return tmpdir.back() == '/' ? tmpdir.substr(0_byte, tmpdir.length()-1)
                                     : tmpdir;
     return "/tmp";
+}
+
+StringView homedir()
+{
+    StringView home = getenv("HOME");
+    if (home.empty())
+        return getpwuid(geteuid())->pw_dir;
+    return home;
 }
 
 bool fd_readable(int fd)
@@ -157,16 +175,12 @@ String read_fd(int fd, bool text)
 
         if  (text)
         {
-            ssize_t beg = 0;
-            for (ssize_t pos = 0; pos < size; ++pos)
+            for (StringView data{buf, buf + size}; not data.empty();)
             {
-                if (buf[pos] == '\r')
-                {
-                   content += StringView{buf + beg, buf + pos};
-                   beg = pos + 1;
-                }
+               auto it = find(data, '\r');
+               content += StringView{data.begin(), it};
+               data = StringView{(it != data.end()) ? it+1 : it, data.end()};
             }
-            content += StringView{buf + beg, buf + size};
         }
         else
             content += StringView{buf, buf + size};
@@ -243,7 +257,7 @@ void write(int fd, StringView data)
     }
 }
 
-void write_buffer_to_fd(Buffer& buffer, int fd)
+void write_buffer_to_fd(Buffer& buffer, int fd, bool sync)
 {
     auto eolformat = buffer.options()["eolformat"].get<EolFormat>();
     StringView eoldata;
@@ -264,9 +278,12 @@ void write_buffer_to_fd(Buffer& buffer, int fd)
         write(fd, linedata.substr(0, linedata.length()-1));
         write(fd, eoldata);
     }
+
+    if (sync)
+        ::fsync(fd);
 }
 
-void write_buffer_to_file(Buffer& buffer, StringView filename, bool force)
+void write_buffer_to_file(Buffer& buffer, StringView filename, bool force, bool sync)
 {
     struct stat st;
     auto zfilename = filename.zstr();
@@ -276,14 +293,14 @@ void write_buffer_to_file(Buffer& buffer, StringView filename, bool force)
         if (::stat(zfilename, &st) == 0)
         {
             if (::chmod(zfilename, st.st_mode | S_IWUSR) < 0)
-                throw runtime_error("couldn't change file permissions");
+                throw runtime_error("unable to change file permissions");
         }
         else
             force = false;
     }
     auto restore_mode = on_scope_end([&]{
         if (force and ::chmod(zfilename, st.st_mode) < 0)
-            throw runtime_error("couldn't restore file permissions");
+            throw runtime_error("unable to restore file permissions");
     });
 
     int fd = open(zfilename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
@@ -292,7 +309,7 @@ void write_buffer_to_file(Buffer& buffer, StringView filename, bool force)
 
     {
         auto close_fd = on_scope_end([fd]{ close(fd); });
-        write_buffer_to_fd(buffer, fd);
+        write_buffer_to_fd(buffer, fd, sync);
     }
 
     if ((buffer.flags() & Buffer::Flags::File) and
@@ -320,7 +337,7 @@ void write_buffer_to_backup_file(Buffer& buffer)
     }
 }
 
-String find_file(StringView filename, ConstArrayView<String> paths)
+String find_file(StringView filename, StringView buf_dir, ConstArrayView<String> paths)
 {
     struct stat buf;
     if (filename.substr(0_byte, 1_byte) == "/")
@@ -331,13 +348,13 @@ String find_file(StringView filename, ConstArrayView<String> paths)
     }
     if (filename.substr(0_byte, 2_byte) == "~/")
     {
-        String candidate = getenv("HOME") + filename.substr(1_byte);
+        String candidate = homedir() + filename.substr(1_byte);
         if (stat(candidate.c_str(), &buf) == 0 and S_ISREG(buf.st_mode))
             return candidate;
         return "";
     }
 
-    for (auto candidate : paths | transform(parse_filename))
+    for (auto candidate : paths | transform([&](StringView s) { return parse_filename(s, buf_dir); }))
     {
         if (not candidate.empty() and candidate.back() != '/')
             candidate += '/';
@@ -359,7 +376,7 @@ void make_directory(StringView dir, mode_t mode)
         if (stat(dirname.zstr(), &st) == 0)
         {
             if (not S_ISDIR(st.st_mode))
-                throw runtime_error(format("Cannot make directory, '{}' exists but is not a directory", dirname));
+                throw runtime_error(format("cannot make directory, '{}' exists but is not a directory", dirname));
         }
         else
         {
@@ -558,6 +575,8 @@ String get_kak_binary_path()
     kak_assert(res != -1);
     buffer[res] = '\0';
     return buffer;
+#elif defined(__OpenBSD__)
+    return KAK_BIN_PATH;
 #else
 # error "finding executable path is not implemented on this platform"
 #endif

@@ -13,6 +13,7 @@ namespace Kakoune
 
 struct SelectionList;
 struct Key;
+class FaceRegistry;
 
 struct InsertCompleterDesc
 {
@@ -37,7 +38,7 @@ struct InsertCompleterDesc
 using InsertCompleterDescList = Vector<InsertCompleterDesc, MemoryDomain::Options>;
 
 String option_to_string(const InsertCompleterDesc& opt);
-void option_from_string(StringView str, InsertCompleterDesc& opt);
+InsertCompleterDesc option_from_string(Meta::Type<InsertCompleterDesc>, StringView str);
 
 inline StringView option_type_name(Meta::Type<InsertCompleterDesc>)
 {
@@ -81,14 +82,15 @@ public:
     InsertCompleter& operator=(const InsertCompleter&) = delete;
     ~InsertCompleter();
 
-    void select(int offset, Vector<Key>& keystrokes);
-    void update();
+    void select(int index, bool relative, Vector<Key>& keystrokes);
+    void update(bool allow_implicit);
     void reset();
 
     void explicit_file_complete();
     void explicit_word_buffer_complete();
     void explicit_word_all_complete();
-    void explicit_line_complete();
+    void explicit_line_buffer_complete();
+    void explicit_line_all_complete();
 
 private:
     bool setup_ifn();
@@ -99,12 +101,15 @@ private:
 
     void menu_show();
 
-    Context&         m_context;
-    OptionManager&   m_options;
-    InsertCompletion m_completions;
-    int              m_current_candidate = -1;
+    Context&            m_context;
+    OptionManager&      m_options;
+    const FaceRegistry& m_faces;
+    InsertCompletion    m_completions;
+    int                 m_current_candidate = -1;
 
-    using CompleteFunc = InsertCompletion (const SelectionList& sels, const OptionManager& options);
+    using CompleteFunc = InsertCompletion (const SelectionList& sels,
+                                           const OptionManager& options,
+                                           const FaceRegistry& faces);
     CompleteFunc* m_explicit_completer = nullptr;
 };
 

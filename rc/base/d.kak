@@ -11,28 +11,28 @@ hook global BufCreate .*\.di? %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code d \
-    string '"' (?<!\\)(\\\\)*" '' \
-    verbatim_string ` ` '' \
-    verbatim_string_prefixed 'r"' '"' '' \
-    token '#' '\n' '' \
-    disabled /\+ \+/ '' \
-    comment /\* \*/ '' \
-    comment '//' $ ''
+add-highlighter shared/d regions
+add-highlighter shared/d/code default-region group
+add-highlighter shared/d/string region %{(?<!')(?<!'\\)"} %{(?<!\\)(?:\\\\)*"} group
+add-highlighter shared/d/verbatim_string1 region ` ` fill magenta
+add-highlighter shared/d/verbatim_string2 region %{(?<!')(?<!'\\)`} %{(?<!\\)(?:\\\\)*`} fill magenta
+add-highlighter shared/d/verbatim_string_prefixed region %{r`([^(]*)\(} %{\)([^)]*)`} fill magenta
+add-highlighter shared/d/disabled region '/\+[^+]?' '\+/' fill rgb:777777
+add-highlighter shared/d/comment1 region '/\*[^*]?' '\*/' fill comment
+add-highlighter shared/d/comment2 region '//[^/]?' $ fill comment
+add-highlighter shared/d/docstring1 region '/\+\+' '\+/' fill blue
+add-highlighter shared/d/docstring2 region '/\*\*' '\*/' fill blue
+add-highlighter shared/d/docstring3 region /// $ fill blue
 
-add-highlighter shared/d/string fill string
-add-highlighter shared/d/verbatim_string fill magenta
-add-highlighter shared/d/verbatim_string_prefixed fill magenta
-add-highlighter shared/d/token fill meta
-add-highlighter shared/d/disabled fill rgb:777777
-add-highlighter shared/d/comment fill comment
+add-highlighter shared/d/string/ fill string
+add-highlighter shared/d/string/ regex %{\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})\b} 0:value
+add-highlighter shared/d/code/ regex %{'((\\.)?|[^'\\])'} 0:value
+add-highlighter shared/d/code/ regex "-?([0-9_]*\.(?!0[xXbB]))?\b([0-9_]+|0[xX][0-9a-fA-F_]*\.?[0-9a-fA-F_]+|0[bb][01_]+)([ep]-?[0-9_]+)?[fFlLuUi]*\b" 0:value
+add-highlighter shared/d/code/ regex "\b(this)\b\s*[^(]" 1:value
+add-highlighter shared/d/code/ regex "((?:~|\b)this)\b\s*\(" 1:function
+add-highlighter shared/d/code/ regex '#\s*line\b.*' 0:meta
 
-add-highlighter shared/d/string regex %{\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})\b} 0:value
-add-highlighter shared/d/code regex %{'((\\.)?|[^'\\])'} 0:value
-add-highlighter shared/d/code regex "-?([0-9_]*\.(?!0[xXbB]))?\b([0-9_]+|0[xX][0-9a-fA-F_]*\.?[0-9a-fA-F_]+|0[bb][01_]+)([ep]-?[0-9_]+)?[fFlLuUi]*\b" 0:value
-add-highlighter shared/d/code regex "\b(this)\b\s*[^(]" 1:value
-
-%sh{
+evaluate-commands %sh{
     # Grammar
 
     keywords="abstract|alias|align|asm|assert|auto|body|break|case|cast"
@@ -63,20 +63,23 @@ add-highlighter shared/d/code regex "\b(this)\b\s*[^(]" 1:value
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=d %{
-        set-option window static_words '${keywords}:${attributes}:${types}:${values}:${decorators}:${properties}'
-    }" | sed 's,|,:,g'
+        set-option window static_words ${keywords} ${attributes} ${types} ${values} ${decorators} ${properties}
+    }" | tr '|' ' '
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/d/code regex \b(${keywords})\b 0:keyword
-        add-highlighter shared/d/code regex \b(${attributes})\b 0:attribute
-        add-highlighter shared/d/code regex \b(${types})\b 0:type
-        add-highlighter shared/d/code regex \b(${values})\b 0:value
-        add-highlighter shared/d/code regex @(${decorators})\b 0:attribute
-        add-highlighter shared/d/code regex \b(${tokens})\b 0:builtin
-        add-highlighter shared/d/code regex \.(${properties})\b 1:builtin
+        add-highlighter shared/d/code/ regex \b(${keywords})\b 0:keyword
+        add-highlighter shared/d/code/ regex \b(${attributes})\b 0:attribute
+        add-highlighter shared/d/code/ regex \b(${types})\b 0:type
+        add-highlighter shared/d/code/ regex \b(${values})\b 0:value
+        add-highlighter shared/d/code/ regex @(${decorators})\b 0:attribute
+        add-highlighter shared/d/code/ regex \b(${tokens})\b 0:builtin
+        add-highlighter shared/d/code/ regex \.(${properties})\b 1:builtin
     "
 }
+
+add-highlighter shared/d/code/ regex "\bimport\s+([\w._-]+)(?:\s*=\s*([\w._-]+))?" 1:module 2:module
+add-highlighter shared/d/code/ regex "\bmodule\s+([\w_-]+)\b" 1:module
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -92,7 +95,7 @@ define-command -hidden d-indent-on-new-line %~
         # align to opening paren of previous line
         try %{ execute-keys -draft [( <a-k> \A\([^\n]+\n[^\n]*\n?\z <ret> s \A\(\h*.|.\z <ret> '<a-;>' & }
         # copy // comments prefix
-        try %{ execute-keys -draft \;<c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o><c-o>P<esc> }
+        try %{ execute-keys -draft \;<c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o>P<esc> }
         # indent after a switch's case/default statements
         try %[ execute-keys -draft k<a-x> <a-k> ^\h*(case|default).*:$ <ret> j<a-gt> ]
         # indent after if|else|while|for
@@ -113,11 +116,11 @@ define-command -hidden d-indent-on-closing-curly-brace %[
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group d-highlight global WinSetOption filetype=d %{ add-highlighter window ref d }
+hook -group d-highlight global WinSetOption filetype=d %{ add-highlighter window/d ref d }
 
 hook global WinSetOption filetype=d %{
     # cleanup trailing whitespaces when exiting insert mode
-    hook window InsertEnd .* -group d-hooks %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
+    hook window ModeChange insert:.* -group d-hooks %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
     hook window InsertChar \n -group d-indent d-indent-on-new-line
     hook window InsertChar \{ -group d-indent d-indent-on-opening-curly-brace
     hook window InsertChar \} -group d-indent d-indent-on-closing-curly-brace

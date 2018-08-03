@@ -5,18 +5,30 @@ The output returned by this command is expected to comply with the following for
 
 declare-option -hidden line-specs lint_flags
 declare-option -hidden range-specs lint_errors
+declare-option -hidden int lint_error_count
+declare-option -hidden int lint_warning_count
 
 define-command lint -docstring 'Parse the current buffer with a linter' %{
-    %sh{
+    evaluate-commands %sh{
+        if [ -z "${kak_opt_lintcmd}" ]; then
+            printf %s\\n 'echo -markup {Error}The `lintcmd` option is not set'
+            exit 1
+        fi
+
+        extension=""
+        if printf %s "${kak_buffile}" | grep -qE '[^/.]\.[[:alnum:]]+$'; then
+            extension=".${kak_buffile##*.}"
+        fi
+
         dir=$(mktemp -d "${TMPDIR:-/tmp}"/kak-lint.XXXXXXXX)
         mkfifo "$dir"/fifo
-        printf '%s\n' "evaluate-commands -no-hooks write $dir/buf"
+        printf '%s\n' "evaluate-commands -no-hooks write -sync $dir/buf${extension}"
 
         printf '%s\n' "evaluate-commands -draft %{
                   edit! -fifo $dir/fifo -debug *lint-output*
                   set-option buffer filetype make
                   set-option buffer make_current_error_line 0
-                  hook -group fifo buffer BufCloseFifo .* %{
+                  hook -always -group fifo buffer BufCloseFifo .* %{
                       nop %sh{ rm -r '$dir' }
                       remove-hooks buffer fifo
                   }
@@ -24,34 +36,45 @@ define-command lint -docstring 'Parse the current buffer with a linter' %{
 
         { # do the parsing in the background and when ready send to the session
 
-        eval "$kak_opt_lintcmd '$dir'/buf" | sort -t: -k2,2 -n > "$dir"/stderr
-        printf '%s\n' "evaluate-commands -client $kak_client echo 'linting done'" | kak -p "$kak_session"
+        eval "$kak_opt_lintcmd '$dir'/buf${extension}" | sort -t: -k2,2 -n > "$dir"/stderr
 
         # Flags for the gutter:
-        #   line3|{red}:line11|{yellow}
+        #   stamp l3|{red}█ l11|{yellow}█
         # Contextual error messages:
-        #   l1,c1,err1
-        #   ln,cn,err2
-        awk -F: -v file="$kak_buffile" -v stamp="$kak_timestamp" '
+        #   stamp 'l1.c1,l1.c1|kind:message' 'l2.c2,l2.c2|kind:message'
+        awk -F: -v file="$kak_buffile" -v stamp="$kak_timestamp" -v client="$kak_client" '
+            BEGIN {
+                error_count = 0
+                warning_count = 0
+            }
             /:[0-9]+:[0-9]+: ([Ff]atal )?[Ee]rror/ {
-                flags = flags $2 "|{red}█:"
+                flags = flags " " $2 "|{red}█"
+                error_count++
             }
             /:[0-9]+:[0-9]+:/ {
                 if ($4 !~ /[Ee]rror/) {
-                    flags = flags $2 "|{yellow}█:"
+                    flags = flags " " $2 "|{yellow}█"
+                    warning_count++
                 }
             }
             /:[0-9]+:[0-9]+:/ {
-                errors = errors ":" $2 "." $3 "," $2 "." $3 "|" substr($4,2)
-                # fix case where $5 is not the last field because of extra :s in the message
-                for (i=5; i<=NF; i++) errors = errors "\\:" $i
-                errors = substr(errors, 1, length(errors)-1) " (col " $3 ")"
+                kind = substr($4, 2)
+                error = $2 "." $3 "," $2 "." $3 "|" kind
+                msg = ""
+                # fix case where $5 is not the last field because of extra colons in the message
+                for (i=5; i<=NF; i++) msg = msg ":" $i
+                gsub(/\|/, "\\|", msg)
+                gsub("'\''", "'"''"'", msg)
+                error = error msg " (col " $3 ")"
+                errors = errors " '\''" error "'\''"
             }
             END {
-                print "set-option \"buffer=" file "\" lint_flags  %{" stamp ":" substr(flags,  1, length(flags)-1)  "}"
-                errors = substr(errors, 1, length(errors)-1)
+                print "set-option \"buffer=" file "\" lint_flags " stamp flags
                 gsub("~", "\\~", errors)
-                print "set-option \"buffer=" file "\" lint_errors %~" stamp errors "~"
+                print "set-option \"buffer=" file "\" lint_errors " stamp errors
+                print "set-option \"buffer=" file "\" lint_error_count " error_count
+                print "set-option \"buffer=" file "\" lint_warning_count " warning_count
+                print "evaluate-commands -client " client " lint-show-counters"
             }
         ' "$dir"/stderr | kak -p "$kak_session"
 
@@ -63,62 +86,90 @@ define-command lint -docstring 'Parse the current buffer with a linter' %{
 
 define-command -hidden lint-show %{
     update-option buffer lint_errors
-    %sh{
-        desc=$(printf '%s\n' "$kak_opt_lint_errors" | sed -e 's/\([^\\]\):/\1\n/g' | tail -n +2 |
-               sed -ne "/^$kak_cursor_line\.[^|]\+|.*/ { s/^[^|]\+|//g; s/'/\\\\'/g; s/\\\\:/:/g; p; }")
-        if [ -n "$desc" ]; then
-            printf '%s\n' "info -anchor $kak_cursor_line.$kak_cursor_column '$desc'"
-        fi
-    } }
+    evaluate-commands %sh{
+        eval "set -- ${kak_opt_lint_errors}"
+        shift
+
+        s=""
+        for i in "$@"; do
+            s="${s}
+${i}"
+        done
+
+        printf %s\\n "${s}" | awk -v line="${kak_cursor_line}" \
+                                  -v column="${kak_cursor_column}" \
+            "/^${kak_cursor_line}\./"' {
+                gsub(/"/, "\"\"")
+                msg = substr($0, index($0, "|"))
+                sub(/^[^ \t]+[ \t]+/, "", msg)
+                printf "info -anchor %d.%d \"%s\"\n", line, column, msg
+            }'
+    }
+}
+
+define-command -hidden lint-show-counters %{
+    echo -markup linting results:{red} %opt{lint_error_count} error(s){yellow} %opt{lint_warning_count} warning(s)
+}
 
 define-command lint-enable -docstring "Activate automatic diagnostics of the code" %{
-    add-highlighter window flag_lines default lint_flags
+    add-highlighter window/lint flag-lines default lint_flags
     hook window -group lint-diagnostics NormalIdle .* %{ lint-show }
+    hook window -group lint-diagnostics WinSetOption lint_flags=.* %{ info; lint-show }
 }
 
 define-command lint-disable -docstring "Disable automatic diagnostics of the code" %{
-    remove-highlighter window/hlflags_lint_flags
+    remove-highlighter window/lint
     remove-hooks window lint-diagnostics
 }
 
 define-command lint-next-error -docstring "Jump to the next line that contains an error" %{
     update-option buffer lint_errors
-    %sh{
-        printf '%s\n' "$kak_opt_lint_errors" | sed -e 's/\([^\\]\):/\1\n/g' | tail -n +2 | {
-            while IFS='|' read -r candidate rest
-            do
-                first_range=${first_range-$candidate}
-                if [ "${candidate%%.*}" -gt "$kak_cursor_line" ]; then
-                    range=$candidate
-                    break
-                fi
-            done
-            range=${range-$first_range}
-            if [ -n "$range" ]; then
-                printf '%s\n' "select $range"
-            else
-                printf 'echo -markup "{Error}no lint diagnostics"\n'
+
+    evaluate-commands %sh{
+        eval "set -- ${kak_opt_lint_errors}"
+        shift
+
+        for i in "$@"; do
+            candidate="${i%%|*}"
+            if [ "${candidate%%.*}" -gt "${kak_cursor_line}" ]; then
+                range="${candidate}"
+                break
             fi
-        }
-    }}
+        done
+
+        range="${range-${1%%|*}}"
+        if [ -n "${range}" ]; then
+            printf 'select %s\n' "${range}"
+        else
+            printf 'echo -markup "{Error}no lint diagnostics"\n'
+        fi
+    }
+}
 
 define-command lint-previous-error -docstring "Jump to the previous line that contains an error" %{
     update-option buffer lint_errors
-    %sh{
-        printf '%s\n' "$kak_opt_lint_errors" | sed -e 's/\([^\\]\):/\1\n/g' | tail -n +2 | sort -t. -k1,1 -rn | {
-            while IFS='|' read -r candidate rest
-            do
-                first_range=${first_range-$candidate}
-                if [ "${candidate%%.*}" -lt "$kak_cursor_line" ]; then
-                    range=$candidate
-                    break
-                fi
-            done
-            range=${range-$first_range}
-            if [ -n "$range" ]; then
-                printf '%s\n' "select $range"
-            else
-                printf 'echo -markup "{Error}no lint diagnostics"\n'
+
+    evaluate-commands %sh{
+        eval "set -- ${kak_opt_lint_errors}"
+        shift
+
+        for i in "$@"; do
+            candidate="${i%%|*}"
+
+            if [ "${candidate%%.*}" -ge "${kak_cursor_line}" ]; then
+                range="${last_candidate}"
+                break
             fi
-        }
-    }}
+
+            last_candidate="${candidate}"
+        done
+
+        if [ $# -ge 1 ]; then
+            shift $(($# - 1))
+            range="${range:-${1%%|*}}"
+            printf 'select %s\n' "${range}"
+        else
+            printf 'echo -markup "{Error}no lint diagnostics"\n'
+        fi
+    }
+}

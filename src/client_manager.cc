@@ -32,14 +32,14 @@ String ClientManager::generate_name() const
 {
     for (int i = 0; true; ++i)
     {
-        String name = format("unnamed{}", i);
-        if (validate_client_name(name))
+        String name = format("client{}", i);
+        if (not client_name_exists(name))
             return name;
     }
 }
 
 Client* ClientManager::create_client(std::unique_ptr<UserInterface>&& ui, int pid,
-                                     EnvVarMap env_vars, StringView init_cmds,
+                                     String name, EnvVarMap env_vars, StringView init_cmds,
                                      Optional<BufferCoord> init_coord,
                                      Client::OnExitCallback on_exit)
 {
@@ -47,7 +47,8 @@ Client* ClientManager::create_client(std::unique_ptr<UserInterface>&& ui, int pi
     WindowAndSelections ws = get_free_window(buffer);
     Client* client = new Client{std::move(ui), std::move(ws.window),
                                 std::move(ws.selections), pid,
-                                std::move(env_vars), generate_name(),
+                                std::move(env_vars),
+                                name.empty() ? generate_name() : std::move(name),
                                 std::move(on_exit)};
     m_clients.emplace_back(client);
 
@@ -64,7 +65,8 @@ Client* ClientManager::create_client(std::unique_ptr<UserInterface>&& ui, int pi
     }
     catch (Kakoune::runtime_error& error)
     {
-        client->context().print_status({ fix_atom_text(error.what().str()), get_face("Error") });
+        client->context().print_status({ fix_atom_text(error.what().str()),
+                                         client->context().faces()["Error"] });
         client->context().hooks().run_hook("RuntimeError", error.what(),
                                            client->context());
     }
@@ -88,6 +90,11 @@ void ClientManager::process_pending_inputs() const
         if (not had_input)
             break;
     }
+}
+
+bool ClientManager::has_pending_inputs() const
+{
+    return any_of(m_clients, [](auto&& c) { return c->has_pending_inputs(); });
 }
 
 void ClientManager::remove_client(Client& client, bool graceful, int status)
@@ -166,9 +173,9 @@ void ClientManager::clear_client_trash()
     m_client_trash.clear();
 }
 
-bool ClientManager::validate_client_name(StringView name) const
+bool ClientManager::client_name_exists(StringView name) const
 {
-    return const_cast<ClientManager*>(this)->get_client_ifp(name) == nullptr;
+    return const_cast<ClientManager*>(this)->get_client_ifp(name) != nullptr;
 }
 
 Client* ClientManager::get_client_ifp(StringView name)
@@ -185,7 +192,7 @@ Client& ClientManager::get_client(StringView name)
 {
     if (Client* client = get_client_ifp(name))
         return *client;
-    throw runtime_error(format("no client named '{}'", name));
+    throw runtime_error(format("no such client: '{}'", name));
 }
 
 void ClientManager::redraw_clients() const

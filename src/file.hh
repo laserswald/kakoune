@@ -3,6 +3,7 @@
 
 #include "array_view.hh"
 #include "meta.hh"
+#include "string.hh"
 #include "units.hh"
 #include "vector.hh"
 
@@ -14,17 +15,18 @@ namespace Kakoune
 
 class Buffer;
 class String;
-class StringView;
 class Regex;
 
 using CandidateList = Vector<String, MemoryDomain::Completion>;
 
-// parse ~/ and $env values in filename and returns the translated filename
-String parse_filename(StringView filename);
+// parse ~/ and %/ in filename and returns the translated filename
+String parse_filename(StringView filename, StringView buf_dir = {});
+
 String real_path(StringView filename);
 String compact_path(StringView filename);
 
 StringView tmpdir();
+StringView homedir();
 
 // returns pair { directory, filename }
 std::pair<StringView, StringView> split_path(StringView path);
@@ -49,11 +51,11 @@ struct MappedFile
     struct stat st {};
 };
 
-void write_buffer_to_file(Buffer& buffer, StringView filename, bool force = false);
-void write_buffer_to_fd(Buffer& buffer, int fd);
+void write_buffer_to_file(Buffer& buffer, StringView filename, bool force = false, bool sync = false);
+void write_buffer_to_fd(Buffer& buffer, int fd, bool sync = false);
 void write_buffer_to_backup_file(Buffer& buffer);
 
-String find_file(StringView filename, ConstArrayView<String> paths);
+String find_file(StringView filename, StringView buf_dir, ConstArrayView<String> paths);
 bool file_exists(StringView filename);
 
 Vector<String> list_files(StringView directory);

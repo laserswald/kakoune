@@ -49,8 +49,15 @@ Here are the requests that can be written by the json ui on stdout:
   mode can be:
   - prompt: the coordinate line should be 0, and the cursor is in the prompt area
   - buffer: the cursor is in the buffer display area
+* set_ui_options(Map<String, String> options)
+  called when ui_options changed with a map of options name to option values
+* refresh(bool force)
 
 The requests that the json ui can interpret on stdin are:
 
 * keys(String key1, String key2...): keystrokes
 * resize(int rows, int columns): notify ui resize
+* mouse(String type, int line, int column): mouse event, type
+  can be: 'move', 'press', 'release', 'wheel_up', 'wheel_down',
+  line, column is the cursor position.
+* menu_select(int index): explicit select of given menu entry

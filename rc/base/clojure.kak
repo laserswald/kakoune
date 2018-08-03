@@ -13,11 +13,11 @@ hook global BufCreate .*[.](cljs?) %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ group clojure
+add-highlighter shared/clojure group
 
-add-highlighter shared/clojure ref lisp
+add-highlighter shared/clojure/ ref lisp
 
-add-highlighter shared/clojure regex \b(clojure.core/['/\w]+)\b 0:keyword
+add-highlighter shared/clojure/ regex \b(clojure.core/['/\w]+)\b 0:keyword
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -27,10 +27,10 @@ define-command -hidden clojure-indent-on-new-line       lisp-indent-on-new-line
 
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-hook -group clojure-highlight global WinSetOption filetype=clojure %{ add-highlighter window ref clojure }
+hook -group clojure-highlight global WinSetOption filetype=clojure %{ add-highlighter window/clojure ref clojure }
 
 hook global WinSetOption filetype=clojure %[
-    hook window InsertEnd  .* -group clojure-hooks  clojure-filter-around-selections
+    hook window ModeChange insert:.* -group clojure-hooks  clojure-filter-around-selections
     hook window InsertChar \n -group clojure-indent clojure-indent-on-new-line
 ]
 

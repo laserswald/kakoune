@@ -11,25 +11,24 @@ hook global BufCreate .*[.](scala) %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code scala \
-    string  '"' (?<!\\)(\\\\)*"         '' \
-    literal  `    `                     '' \
-    comment  //   $                     '' \
-    comment /[*] [*]/                 /[*]
-
-add-highlighter shared/scala/string  fill string
-add-highlighter shared/scala/literal fill variable
-add-highlighter shared/scala/comment fill comment
+add-highlighter shared/scala regions
+add-highlighter shared/scala/code default-region group
+add-highlighter shared/scala/string       region '"' (?<!\\)(\\\\)*"   fill string
+add-highlighter shared/scala/literal      region `    `                fill variable
+add-highlighter shared/scala/comment      region -recurse /[*] /[*] [*]/  fill comment
+add-highlighter shared/scala/line_comment region //   $                fill comment
 
 # Keywords are collected at
 # http://tutorialspoint.com/scala/scala_basic_syntax.htm
 
-add-highlighter shared/scala/code regex \b(import|package)\b 0:meta
-add-highlighter shared/scala/code regex \b(this|true|false|null)\b 0:value
-add-highlighter shared/scala/code regex \b(become|case|catch|class|def|do|else|extends|final|finally|for|forSome|goto|if|initialize|macro|match|new|object|onTransition|return|startWith|stay|throw|trait|try|unbecome|using|val|var|when|while|with|yield)\b 0:keyword
-add-highlighter shared/scala/code regex \b(abstract|final|implicit|implicitly|lazy|override|private|protected|require|sealed|super)\b 0:attribute
-add-highlighter shared/scala/code regex \b(⇒|=>|<:|:>|=:=|::|&&|\|\|)\b 0:operator
-add-highlighter shared/scala/code regex "'[_A-Za-z0-9$]+" 0:variable
+add-highlighter shared/scala/code/ regex (?:\b|\W)(@\w+|import|package)\b 0:meta
+add-highlighter shared/scala/code/ regex \b(true|false|null)\b 0:value
+add-highlighter shared/scala/code/ regex \b(?:class|extends|with)\s+(\w+) 0:type
+add-highlighter shared/scala/code/ regex \b([A-Z]\w*)\b 0:type
+add-highlighter shared/scala/code/ regex (?:def|var|val)\s+(\w+) 0:variable
+add-highlighter shared/scala/code/ regex \b(become|case|catch|class|def|do|else|extends|final|finally|for|forSome|goto|if|initialize|macro|match|new|object|onTransition|return|startWith|stay|this|super|throw|trait|try|unbecome|using|val|var|when|while|with|yield)\b 0:keyword
+add-highlighter shared/scala/code/ regex \b(abstract|final|implicit|implicitly|lazy|override|private|protected|require|sealed)\b 0:attribute
+add-highlighter shared/scala/code/ regex (\[|\]|=>|<:|:>|=:=|::|&&|\|\|) 0:operator
 
 # Commands
 # ‾‾‾‾‾‾‾‾
@@ -62,10 +61,10 @@ define-command -hidden scala-indent-on-closing-curly-brace %[
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group scala-highlight global WinSetOption filetype=scala %{ add-highlighter window ref scala }
+hook -group scala-highlight global WinSetOption filetype=scala %{ add-highlighter window/scala ref scala }
 
 hook global WinSetOption filetype=scala %[
-    hook window InsertEnd  .* -group scala-hooks  scala-filter-around-selections
+    hook window ModeChange insert:.* -group scala-hooks  scala-filter-around-selections
     hook window InsertChar \n -group scala-indent scala-indent-on-new-line
     hook window InsertChar \} -group scala-indent scala-indent-on-closing-curly-brace
 ]

@@ -37,17 +37,52 @@
 namespace Kakoune
 {
 
-static const char* startup_info =
-"Kakoune recent breaking changes:\n"
-" * Selection extending behaviour has been simplified, it now just\n"
-"   maintain the current anchor and moves the cursor,\n"
-" * Custom text objects are bound to 'c' instead of ':'\n"
-" * Highlighters have been refactored to be part of scopes\n"
-"   the add-highlighter and remove-highlighter command syntax changed.\n"
-" * Regex implementation switched to a custom one, the syntax is slightly\n"
-"   less tolerant.\n"
-" * InputModeChange hook has been introduced and is expected to replace\n"
-"   the various ${MODE}Begin/${MODE}End hooks, consider those deprecated.\n";
+extern const char* version;
+
+struct {
+    unsigned int version;
+    const char* notes;
+} constexpr version_notes[] = { {
+        0,
+        "» Big breaking refactoring of various Kakoune features,\n"
+        "  configuration might need to be updated see `:doc changelog` for details\n"
+        "» define-command -allow-override switch has been renamed -override\n"
+    }, {
+        20180413,
+        "» ModeChange hook has been introduced and is expected to replace\n"
+        "  the various ${MODE}Begin/${MODE}End hooks, consider those deprecated.\n"
+        "» '*' Does not strip whitespaces anymore, use built-in '_' to strip them\n"
+        "» 'l' on eol will go to next line, 'h' on first char will go to previous\n"
+        "» selections merging behaviour is now a bit more complex again\n"
+        "» 'x' will only jump to next line if full line is already selected\n"
+        "» WORD text object moved to <a-w> instead of W for consistency\n"
+        "» rotate main selection moved to ), rotate content to <a-)>, ( for backward\n"
+        "» faces are now scoped, set-face command takes an additional scope parameter\n"
+        "» <backtab> key is gone, use <s-tab> instead\n"
+} };
+
+void show_startup_info(Client* local_client, int last_version)
+{
+    String info;
+    for (auto note : version_notes)
+    {
+        if (not note.version)
+            info += format("• Development version\n{}\n", note.notes);
+        else if (note.version > last_version)
+        {
+            const auto year = note.version / 10000;
+            const auto month = (note.version / 100) % 100;
+            const auto day = note.version % 100;
+            info += format("• Kakoune v{}.{}{}.{}{}\n{}\n",
+                           year, month < 10 ? "0" : "", month, day < 10 ? "0" : "", day, note.notes);
+        }
+    }
+    if (not info.empty())
+    {
+        info += "See the `:doc options startup-info` to control this message\n";
+        local_client->info_show(format("Kakoune {}", version), info, {}, InfoStyle::Prompt);
+    }
+}
 
 struct startup_error : runtime_error
 {
@@ -68,131 +103,144 @@ String runtime_directory()
     return "/usr/share/kak";
 }
 
-void register_env_vars()
+String config_directory()
 {
-    static const struct {
-        const char* name;
-        bool prefix;
-        String (*func)(StringView, const Context&);
-    } env_vars[] = { {
-            "bufname", false,
-            [](StringView name, const Context& context) -> String
-            { return context.buffer().display_name(); }
-        }, {
-            "buffile", false,
-            [](StringView name, const Context& context) -> String
-            { return context.buffer().name(); }
-        }, {
-            "buflist", false,
-            [](StringView name, const Context& context)
-            { return join(BufferManager::instance() |
-                          transform(std::mem_fn(&Buffer::display_name)), ':'); }
-        }, {
-            "buf_line_count", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.buffer().line_count()); }
-        }, {
-            "timestamp", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.buffer().timestamp()); }
-        }, {
-            "history_id", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.buffer().current_history_id()); }
-        }, {
-            "selection", false,
-            [](StringView name, const Context& context)
-            { const Selection& sel = context.selections().main();
-              return content(context.buffer(), sel); }
-        }, {
-            "selections", false,
-            [](StringView name, const Context& context)
-            { return join(context.selections_content(), ':'); }
-        }, {
-            "runtime", false,
-            [](StringView name, const Context& context)
-            { return runtime_directory(); }
-        }, {
-            "opt_", true,
-            [](StringView name, const Context& context)
-            { return context.options()[name.substr(4_byte)].get_as_string(); }
-        }, {
-            "reg_", true,
-            [](StringView name, const Context& context)
-            { return context.main_sel_register_value(name.substr(4_byte)).str(); }
-        }, {
-            "client_env_", true,
-            [](StringView name, const Context& context)
-            { return context.client().get_env_var(name.substr(11_byte)).str(); }
-        }, {
-            "session", false,
-            [](StringView name, const Context& context) -> String
-            { return Server::instance().session(); }
-        }, {
-            "client", false,
-            [](StringView name, const Context& context) -> String
-            { return context.name(); }
-        }, {
-            "client_pid", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.client().pid()); }
-        }, {
-            "client_list", false,
-            [](StringView name, const Context& context) -> String
-            { return join(ClientManager::instance() |
-                          transform([](const std::unique_ptr<Client>& c) -> const String&
-                                   { return c->context().name(); }), ':'); }
-        }, {
-            "modified", false,
-            [](StringView name, const Context& context) -> String
-            { return context.buffer().is_modified() ? "true" : "false"; }
-        }, {
-            "cursor_line", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.selections().main().cursor().line + 1); }
-        }, {
-            "cursor_column", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.selections().main().cursor().column + 1); }
-        }, {
-            "cursor_char_value", false,
-            [](StringView name, const Context& context) -> String
-            { auto coord = context.selections().main().cursor();
-              auto& buffer = context.buffer();
-              return to_string((size_t)utf8::codepoint(buffer.iterator_at(coord), buffer.end())); }
-        }, {
-            "cursor_char_column", false,
-            [](StringView name, const Context& context) -> String
-            { auto coord = context.selections().main().cursor();
-              return to_string(context.buffer()[coord.line].char_count_to(coord.column) + 1); }
-        }, {
-            "cursor_byte_offset", false,
-            [](StringView name, const Context& context) -> String
-            { auto cursor = context.selections().main().cursor();
-              return to_string(context.buffer().distance({0,0}, cursor)); }
-        }, {
-            "selection_desc", false,
-            [](StringView name, const Context& context)
-            { return selection_to_string(context.selections().main()); }
-        }, {
-            "selections_desc", false,
-            [](StringView name, const Context& context)
-            { return selection_list_to_string(context.selections()); }
-        }, {
-            "window_width", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.window().dimensions().column); }
-        }, {
-            "window_height", false,
-            [](StringView name, const Context& context) -> String
-            { return to_string(context.window().dimensions().line); }
-        }
-    };
-
-    ShellManager& shell_manager = ShellManager::instance();
-    for (auto& env_var : env_vars)
-        shell_manager.register_env_var(env_var.name, env_var.prefix, env_var.func);
+    StringView config_home = getenv("XDG_CONFIG_HOME");
+    if (config_home.empty())
+        return format("{}/.config/kak", homedir());
+    return format("{}/kak", config_home);
 }
+
+static const EnvVarDesc builtin_env_vars[] = { {
+        "bufname", false,
+        [](StringView name, const Context& context) -> String
+        { return context.buffer().display_name(); }
+    }, {
+        "buffile", false,
+        [](StringView name, const Context& context) -> String
+        { return context.buffer().name(); }
+    }, {
+        "buflist", false,
+        [](StringView name, const Context& context)
+        { return join(BufferManager::instance() |
+                      transform(&Buffer::display_name) | transform(quote), ' ', false); }
+    }, {
+        "buf_line_count", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string(context.buffer().line_count()); }
+    }, {
+        "timestamp", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string(context.buffer().timestamp()); }
+    }, {
+        "history_id", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string((size_t)context.buffer().current_history_id()); }
+    }, {
+        "selection", false,
+        [](StringView name, const Context& context)
+        { const Selection& sel = context.selections().main();
+          return content(context.buffer(), sel); }
+    }, {
+        "selections", false,
+        [](StringView name, const Context& context)
+        { return join(context.selections_content() | transform(quote), ' ', false); }
+    }, {
+        "runtime", false,
+        [](StringView name, const Context& context)
+        { return runtime_directory(); }
+    }, {
+        "config", false,
+        [](StringView name, const Context& context)
+        { return config_directory(); }
+    }, {
+        "version", false,
+        [](StringView name, const Context& context) -> String
+        { return version; }
+    }, {
+        "opt_", true,
+        [](StringView name, const Context& context)
+        { return context.options()[name.substr(4_byte)].get_as_string(); }
+    }, {
+        "main_reg_", true,
+        [](StringView name, const Context& context)
+        { return context.main_sel_register_value(name.substr(9_byte)).str(); }
+    }, {
+        "reg_", true,
+        [](StringView name, const Context& context)
+        { return join(RegisterManager::instance()[name.substr(4_byte)].get(context) | transform(quote), ' ', false); }
+    }, {
+        "client_env_", true,
+        [](StringView name, const Context& context)
+        { return context.client().get_env_var(name.substr(11_byte)).str(); }
+    }, {
+        "session", false,
+        [](StringView name, const Context& context) -> String
+        { return Server::instance().session(); }
+    }, {
+        "client", false,
+        [](StringView name, const Context& context) -> String
+        { return context.name(); }
+    }, {
+        "client_pid", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string(context.client().pid()); }
+    }, {
+        "client_list", false,
+        [](StringView name, const Context& context) -> String
+        { return join(ClientManager::instance() |
+                      transform([](const std::unique_ptr<Client>& c) -> const String&
+                               { return c->context().name(); }), ' ', false); }
+    }, {
+        "modified", false,
+        [](StringView name, const Context& context) -> String
+        { return context.buffer().is_modified() ? "true" : "false"; }
+    }, {
+        "cursor_line", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string(context.selections().main().cursor().line + 1); }
+    }, {
+        "cursor_column", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string(context.selections().main().cursor().column + 1); }
+    }, {
+        "cursor_char_value", false,
+        [](StringView name, const Context& context) -> String
+        { auto coord = context.selections().main().cursor();
+          auto& buffer = context.buffer();
+          return to_string((size_t)utf8::codepoint(buffer.iterator_at(coord), buffer.end())); }
+    }, {
+        "cursor_char_column", false,
+        [](StringView name, const Context& context) -> String
+        { auto coord = context.selections().main().cursor();
+          return to_string(context.buffer()[coord.line].char_count_to(coord.column) + 1); }
+    }, {
+        "cursor_byte_offset", false,
+        [](StringView name, const Context& context) -> String
+        { auto cursor = context.selections().main().cursor();
+          return to_string(context.buffer().distance({0,0}, cursor)); }
+    }, {
+        "selection_desc", false,
+        [](StringView name, const Context& context)
+        { return selection_to_string(context.selections().main()); }
+    }, {
+        "selections_desc", false,
+        [](StringView name, const Context& context)
+        { return selection_list_to_string(context.selections()); }
+    }, {
+        "window_width", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string(context.window().dimensions().column); }
+    }, {
+        "window_height", false,
+        [](StringView name, const Context& context) -> String
+        { return to_string(context.window().dimensions().line); }
+    }, {
+        "user_modes", false,
+        [](StringView name, const Context& context) -> String
+        { return join(context.keymaps().user_modes(), ' ', false); }
+    }
+};
 
 void register_registers()
 {
@@ -215,8 +263,10 @@ void register_registers()
 
     register_manager.add_register('#', make_dyn_reg(
         [](const Context& context) {
+            const size_t count = context.selections().size();
             StringList res;
-            for (size_t i = 1; i < context.selections().size()+1; ++i)
+            res.reserve(count);
+            for (size_t i = 1; i < count+1; ++i)
                 res.push_back(to_string((int)i));
             return res;
         }));
@@ -272,7 +322,7 @@ static void check_timeout(const int& timeout)
 
 static void check_extra_word_chars(const Vector<Codepoint, MemoryDomain::Options>& extra_chars)
 {
-    if (contains_that(extra_chars, is_blank))
+    if (any_of(extra_chars, is_blank))
         throw runtime_error{"blanks are not accepted for extra completion characters"};
 }
 
@@ -280,7 +330,7 @@ static void check_matching_pairs(const Vector<Codepoint, MemoryDomain::Options>&
 {
     if ((pairs.size() % 2) != 0)
         throw runtime_error{"matching pairs should have a pair number of element"};
-    if (contains_that(pairs, [](Codepoint c) { return not is_punctuation(c); }))
+    if (not all_of(pairs, is_punctuation))
         throw runtime_error{"matching pairs can only be punctuation"};
 }
 
@@ -297,16 +347,16 @@ void register_options()
     reg.declare_option("BOM", "byte order mark to use when writing buffer",
                        ByteOrderMark::None);
     reg.declare_option("incsearch",
-                       "incrementaly apply search/select/split regex",
+                       "incrementally apply search/select/split regex",
                        true);
     reg.declare_option("autoinfo",
                        "automatically display contextual help",
                        AutoInfo::Command | AutoInfo::OnKey);
-    reg.declare_option("autoshowcompl",
-                       "automatically display possible completions for prompts",
-                       true);
+    reg.declare_option("auto_complete",
+                       "automatically display possible completions",
+                       AutoComplete::Insert | AutoComplete::Prompt);
     reg.declare_option("aligntab",
-                       "use tab characters when possible for alignement",
+                       "use tab characters when possible for alignment",
                        false);
     reg.declare_option("ignored_files",
                        "patterns to ignore when completing filenames",
@@ -316,7 +366,7 @@ void register_options()
                       Regex{});
     reg.declare_option("filetype", "buffer filetype", ""_str);
     reg.declare_option("path", "path to consider when trying to find a file",
-                   Vector<String, MemoryDomain::Options>({ "./", "/usr/include" }));
+                   Vector<String, MemoryDomain::Options>({ "./", "%/", "/usr/include" }));
     reg.declare_option("completers", "insert mode completers to execute.",
                        InsertCompleterDescList({
                            InsertCompleterDesc{ InsertCompleterDesc::Filename, {} },
@@ -333,7 +383,7 @@ void register_options()
         "fs_check_timeout", "timeout, in milliseconds, between file system buffer modification checks",
         500);
     reg.declare_option("ui_options",
-                       "colon separated list of <key>=<value> options that are "
+                       "space separated list of <key>=<value> options that are "
                        "passed to and interpreted by the user interface\n"
                        "\n"
                        "The ncurses ui supports the following options:\n"
@@ -344,7 +394,8 @@ void register_options()
                        "    ncurses_enable_mouse          bool\n"
                        "    ncurses_change_colors         bool\n"
                        "    ncurses_wheel_up_button       int\n"
-                       "    ncurses_wheel_down_button     int\n",
+                       "    ncurses_wheel_down_button     int\n"
+                       "    ncurses_shift_function_key    int\n",
                        UserInterface::Options{});
     reg.declare_option("modelinefmt", "format string used to generate the modeline",
                        "%val{bufname} %val{cursor_line}:%val{cursor_char_column} {{context_info}} {{mode_info}} - %val{client}@[%val{session}]"_str);
@@ -359,11 +410,11 @@ void register_options()
         "matching_pairs",
         "set of pair of characters to be considered as matching pairs",
         { '(', ')', '{', '}', '[', ']', '<', '>' });
+    reg.declare_option<int>("startup_info_version", "version up to which startup info changes should be hidden", 0);
 }
 
 static Client* local_client = nullptr;
 static int local_client_exit = 0;
-static sig_atomic_t sighup_raised = 0;
 static UserInterface* local_ui = nullptr;
 static bool convert_to_client_pending = false;
 
@@ -388,6 +439,7 @@ std::unique_ptr<UserInterface> make_ui(UIType ui_type)
     struct DummyUI : UserInterface
     {
         DummyUI() { set_signal_handler(SIGINT, SIG_DFL); }
+        bool is_ok() const override { return true; }
         void menu_show(ConstArrayView<DisplayLine>, DisplayCoord,
                        Face, Face, MenuStyle) override {}
         void menu_select(int) override {}
@@ -438,10 +490,6 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
         {
             kak_assert(not local_ui);
             local_ui = this;
-            m_old_sighup = set_signal_handler(SIGHUP, [](int) {
-                static_cast<LocalUI*>(local_ui)->on_sighup();
-                sighup_raised = 1;
-            });
 
             m_old_sigtstp = set_signal_handler(SIGTSTP, [](int) {
                 if (ClientManager::instance().count() == 1 and
@@ -467,7 +515,6 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
 
         ~LocalUI() override
         {
-            set_signal_handler(SIGHUP, m_old_sighup);
             set_signal_handler(SIGTSTP, m_old_sigtstp);
             local_client = nullptr;
             local_ui = nullptr;
@@ -484,7 +531,6 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
 
     private:
         using SigHandler = void (*)(int);
-        SigHandler m_old_sighup;
         SigHandler m_old_sigtstp;
     };
 
@@ -504,20 +550,20 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
     return std::make_unique<LocalUI>();
 }
 
-int run_client(StringView session, StringView client_init,
+int run_client(StringView session, StringView name, StringView client_init,
                Optional<BufferCoord> init_coord, UIType ui_type,
                bool suspend)
 {
     try
     {
         EventManager event_manager;
-        RemoteClient client{session, make_ui(ui_type), getpid(), get_env_vars(),
+        RemoteClient client{session, name, make_ui(ui_type), getpid(), get_env_vars(),
                             client_init, std::move(init_coord)};
         if (suspend)
             raise(SIGTSTP);
-        while (not client.exit_status())
+        while (not client.exit_status() and client.is_ui_ok())
             event_manager.handle_next_events(EventMode::Normal);
-        return *client.exit_status();
+        return client.exit_status().value_or(-1);
     }
     catch (disconnected& e)
     {
@@ -529,6 +575,7 @@ int run_client(StringView session, StringView client_init,
 struct convert_to_client_mode
 {
     String session;
+    String client_name;
     String buffer_name;
     String selections;
 };
@@ -545,7 +592,7 @@ constexpr bool with_bit_ops(Meta::Type<ServerFlags>) { return true; }
 
 int run_server(StringView session, StringView server_init,
                StringView client_init, Optional<BufferCoord> init_coord,
-               ServerFlags flags, UIType ui_type,
+               ServerFlags flags, UIType ui_type, DebugFlags debug_flags,
                ConstArrayView<StringView> files)
 {
     static bool terminate = false;
@@ -571,20 +618,20 @@ int run_server(StringView session, StringView server_init,
 
     StringRegistry      string_registry;
     GlobalScope         global_scope;
-    ShellManager        shell_manager;
+    ShellManager        shell_manager{builtin_env_vars};
     CommandManager      command_manager;
     RegisterManager     register_manager;
     HighlighterRegistry highlighter_registry;
     DefinedHighlighters defined_highlighters;
-    FaceRegistry        face_registry;
     ClientManager       client_manager;
     BufferManager       buffer_manager;
 
     register_options();
-    register_env_vars();
     register_registers();
     register_commands();
     register_highlighters();
+
+    global_scope.options()["debug"].set(debug_flags);
 
     UnitTest::run_all_tests();
 
@@ -653,17 +700,17 @@ int run_server(StringView session, StringView server_init,
         if (not (flags & ServerFlags::Daemon))
         {
             local_client = client_manager.create_client(
-                 create_local_ui(ui_type), getpid(), get_env_vars(), client_init, std::move(init_coord),
+                 create_local_ui(ui_type), getpid(), {}, get_env_vars(), client_init, std::move(init_coord),
                  [](int status) { local_client_exit = status; });
 
-            if (startup_error)
+            if (startup_error and local_client)
                 local_client->print_status({
                     "error during startup, see *debug* buffer for details",
-                    get_face("Error")
+                    local_client->context().faces()["Error"]
                 });
 
-            if (flags & ServerFlags::StartupInfo)
-                local_client->info_show("Welcome to Kakoune", startup_info, {}, InfoStyle::Prompt);
+            if (flags & ServerFlags::StartupInfo and local_client)
+                show_startup_info(local_client, global_scope.options()["startup_info_version"].get<int>());
         }
 
         while (not terminate and
@@ -671,23 +718,36 @@ int run_server(StringView session, StringView server_init,
                 (flags & ServerFlags::Daemon)))
         {
             client_manager.redraw_clients();
-            event_manager.handle_next_events(EventMode::Normal);
+
+            // Loop so that eventual inputs happening during the processing are handled as
+            // well, avoiding unneeded redraws.
+            bool allow_blocking = not client_manager.has_pending_inputs();
+            while (event_manager.handle_next_events(EventMode::Normal, nullptr, allow_blocking))
+            {
+                client_manager.process_pending_inputs();
+                allow_blocking = false;
+            }
             client_manager.process_pending_inputs();
+
             client_manager.clear_client_trash();
             client_manager.clear_window_trash();
             buffer_manager.clear_buffer_trash();
 
-            if (sighup_raised)
+            if (local_client and not contains(client_manager, local_client))
+                local_client = nullptr;
+            else if (local_client and not local_client->is_ui_ok())
             {
-                ClientManager::instance().remove_client(*local_client, false, 0);
+                ClientManager::instance().remove_client(*local_client, false, -1);
+                local_client = nullptr;
                 if (not client_manager.empty() and fork_server_to_background())
                     return 0;
-                sighup_raised = 0;
             }
             else if (convert_to_client_pending)
             {
-                String buffer_name = local_client->context().buffer().name();
-                String selections = selection_list_to_string(local_client->context().selections());
+                kak_assert(local_client);
+                const String client_name = local_client->context().name();
+                const String buffer_name = local_client->context().buffer().name();
+                const String selections = selection_list_to_string(local_client->context().selections());
 
                 ClientManager::instance().remove_client(*local_client, true, 0);
                 client_manager.clear_client_trash();
@@ -697,12 +757,15 @@ int run_server(StringView session, StringView server_init,
                 {
                     String session = server.session();
                     server.close_session(false);
-                    throw convert_to_client_mode{ std::move(session), std::move(buffer_name), std::move(selections) };
+                    throw convert_to_client_mode{ std::move(session), std::move(client_name), std::move(buffer_name), std::move(selections) };
                 }
             }
         }
     }
-    catch (const kill_session&) {}
+    catch (const kill_session& kill)
+    {
+        local_client_exit = kill.exit_status;
+    }
 
     {
         Context empty_context{Context::EmptyContextFlag{}};
@@ -712,21 +775,17 @@ int run_server(StringView session, StringView server_init,
     return local_client_exit;
 }
 
-int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView> files, bool quiet, StringView suffix_backup)
+int run_filter(StringView keystr, ConstArrayView<StringView> files, bool quiet, StringView suffix_backup)
 {
     StringRegistry  string_registry;
     GlobalScope     global_scope;
     EventManager    event_manager;
-    ShellManager    shell_manager;
-    CommandManager  command_manager;
+    ShellManager    shell_manager{builtin_env_vars};
     RegisterManager register_manager;
-    ClientManager   client_manager;
     BufferManager   buffer_manager;
 
     register_options();
-    register_env_vars();
     register_registers();
-    register_commands();
 
     try
     {
@@ -738,12 +797,8 @@ int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView
             {
                 InputHandler input_handler{
                     { buffer, Selection{{0,0}, buffer.back_coord()} },
-                    Context::Flags::Transient
+                    Context::Flags::Draft
                 };
-
-                if (not commands.empty())
-                    command_manager.execute(commands, input_handler.context(),
-                                            ShellContext{});
 
                 for (auto& key : keys)
                     input_handler.handle_key(key);
@@ -758,7 +813,7 @@ int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView
 
         for (auto& file : files)
         {
-            Buffer* buffer = open_file_buffer(file);
+            Buffer* buffer = open_file_buffer(file, Buffer::Flags::NoHooks);
             if (not suffix_backup.empty())
                 write_buffer_to_file(*buffer, buffer->name() + suffix_backup);
             apply_to_buffer(*buffer);
@@ -768,7 +823,7 @@ int run_filter(StringView keystr, StringView commands, ConstArrayView<StringView
         if (not isatty(0))
         {
             Buffer& buffer = *buffer_manager.create_buffer(
-                "*stdin*", Buffer::Flags::None, read_fd(0), InvalidTime);
+                "*stdin*", Buffer::Flags::NoHooks, read_fd(0), InvalidTime);
             apply_to_buffer(buffer);
             write_buffer_to_fd(buffer, 1);
             buffer_manager.delete_buffer(buffer);
@@ -844,10 +899,6 @@ int main(int argc, char* argv[])
     set_signal_handler(SIGINT, [](int){});
     set_signal_handler(SIGCHLD, [](int){});
 
-    Vector<String> params;
-    for (int i = 1; i < argc; ++i)
-        params.emplace_back(argv[i]);
-
     const ParameterDesc param_desc{
         SwitchMap{ { "c", { true,  "connect to given session" } },
                    { "e", { true,  "execute argument on client initialisation" } },
@@ -862,6 +913,7 @@ int main(int argc, char* argv[])
                    { "ui", { true, "set the type of user interface to use (ncurses, dummy, or json)" } },
                    { "l", { false, "list existing sessions" } },
                    { "clear", { false, "clear dead sessions" } },
+                   { "debug", { true, "initial debug option value" } },
                    { "ro", { false, "readonly mode" } },
                    { "help", { false, "display a help message and quit" } } }
     };
@@ -880,7 +932,11 @@ int main(int argc, char* argv[])
             return 0;
         };
 
-        if (contains(ConstArrayView<char*>{argv+1, (size_t)argc-1}, StringView{"--help"}))
+        const auto params = ArrayView<char*>{argv+1, argv + argc}
+                          | transform([](auto* s) { return String{s}; })
+                          | gather<Vector<String>>();
+
+        if (contains(params, "--help"_sv))
             return show_usage();
 
         ParametersParser parser{params, param_desc};
@@ -941,8 +997,7 @@ int main(int argc, char* argv[])
             for (size_t i = 0; i < parser.positional_count(); ++i)
                 files.emplace_back(parser[i]);
 
-            return run_filter(*keys, client_init, files,
-                              (bool)parser.get_switch("q"),
+            return run_filter(*keys, files, (bool)parser.get_switch("q"),
                               parser.get_switch("i").value_or(StringView{}));
         }
 
@@ -987,7 +1042,7 @@ int main(int argc, char* argv[])
             for (auto name : files)
                 new_files += format("edit '{}';", escape(real_path(name), "'", '\\'));
 
-            return run_client(*server_session, new_files + client_init, init_coord, ui_type, false);
+            return run_client(*server_session, {}, new_files + client_init, init_coord, ui_type, false);
         }
         else
         {
@@ -998,11 +1053,12 @@ int main(int argc, char* argv[])
                              (parser.get_switch("d") ? ServerFlags::Daemon : ServerFlags::None) |
                              (parser.get_switch("ro") ? ServerFlags::ReadOnly : ServerFlags::None) |
                              (argc == 1 and isatty(0) ? ServerFlags::StartupInfo : ServerFlags::None);
-                return run_server(session, server_init, client_init, init_coord, flags, ui_type, files);
+                auto debug_flags = option_from_string(Meta::Type<DebugFlags>{}, parser.get_switch("debug").value_or(""));
+                return run_server(session, server_init, client_init, init_coord, flags, ui_type, debug_flags, files);
             }
             catch (convert_to_client_mode& convert)
             {
-                return run_client(convert.session,
+                return run_client(convert.session, convert.client_name,
                                   format("try %^buffer '{}'; select '{}'^; echo converted to client only mode",
                                          escape(convert.buffer_name, "'^", '\\'), convert.selections), {}, ui_type, true);
             }

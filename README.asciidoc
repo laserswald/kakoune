@@ -15,7 +15,7 @@ TL;DR
 
 {website}
 
-*Vim inspired* -- *Faster as in fewer keystrokes* --
+*Modal editor* -- *Faster as in fewer keystrokes* --
 *Multiple selections* -- *Orthogonal design*
 
 ---------------------------------------------
@@ -26,7 +26,7 @@ make
 ---------------------------------------------
 
 See http://github.com/mawww/golf for kakoune solutions to vimgolf challenges,
-regularly beating the best vim solution.
+regularly beating the best Vim solution.
 
 See the link:doc/design.asciidoc[design document] for more information on
 Kakoune philosophy and design.
@@ -36,9 +36,9 @@ Kakoune philosophy and design.
 Introduction
 ------------
 
-Kakoune is a code editor heavily inspired by Vim, as such most of its
-commands are similar to vi's ones, and it shares Vi's "keystrokes as
-a text editing language" model.
+Kakoune is a code editor that implements Vi's "keystrokes as a text editing
+language" model. As it's also a modal editor, it is somewhat similar to the
+Vim editor (after which Kakoune was originally inspired).
 
 Kakoune can operate in two modes, normal and insertion. In insertion mode,
 keys are directly inserted into the current buffer. In normal mode, keys
@@ -122,25 +122,10 @@ its source directory, type *make install*, you can specify the `PREFIX` and
 `DESTDIR` if needed.
 
 [TIP]
-.Homebrew (OSX)
+.Homebrew (macOS) or Linuxbrew
 ====
-NOTE: The ncurses library that comes with OSX is not new enough to support some
-mouse based features of Kakoune (only tested on OSX 10.11.3, where the
-packaged ncurses library is version 5.4, whereas the latest version is 6.0).
-Currently, a fresh Kakoune install requires that you install ncurses 6.0. You
-can install ncurses 6.0 via Homebrew,
---------------------
-brew install ncurses
---------------------
-
-Then, to install,
----------------------------------------------------------------------------------------------
-brew install --HEAD https://raw.githubusercontent.com/mawww/kakoune/master/contrib/kakoune.rb
----------------------------------------------------------------------------------------------
-
-To update kakoune,
 ---------------------------------
-brew upgrade --fetch-HEAD kakoune
+brew install kakoune
 ---------------------------------
 ====
 
@@ -159,13 +144,9 @@ dnf install kakoune
 [TIP]
 .Arch Linux
 ====
-A PKGBUILD https://aur.archlinux.org/packages/kakoune-git[kakoune-git]
-to install Kakoune is available in the
-https://wiki.archlinux.org/index.php/Arch_User_Repository[AUR].
-
+Kakoune is found in the https://www.archlinux.org/packages/community/x86_64/kakoune/[repositories].
 --------------------------------------------------
-# For example build and install Kakoune via yaourt
-yaourt -Sy kakoune-git
+pacman -S kakoune
 --------------------------------------------------
 ====
 
@@ -213,6 +194,18 @@ git clone https://github.com/mawww/kakoune.git && cd kakoune/src
 make
 PREFIX=$HOME/.local make install
 ----------------------------------------------------------------
+====
+
+[TIP]
+.FreeBSD
+====
+Kakoune is available in the official ports tree as
+https://www.freshports.org/editors/kakoune[editors/kakoune].
+
+A binary package is also available and can be installed with
+--------------------------------------------------
+pkg install kakoune
+--------------------------------------------------
 ====
 
 Running
@@ -348,8 +341,8 @@ Movement
  * `<c-u>`: scroll half a page up
  * `<c-d>`: scroll half a page down
 
- * `'`: rotate selections (the main selection becomes the next one)
- * `<a-'>`: rotate selections backwards
+ * `)`: rotate selections (the main selection becomes the next one)
+ * `(`: rotate selections backwards
 
  * `;`: reduce selections to their cursor
  * `<a-;>`: flip the selections' direction
@@ -357,6 +350,7 @@ Movement
 
  * `<a-.>`: repeat last object or `f`/`t` selection command.
 
+ * `_`: trim selections
 
 A word is a sequence of alphanumeric characters or underscore, a WORD is a
 sequence of non whitespace characters.
@@ -459,9 +453,10 @@ Changes
  * `<a-@>`: convert spaces to tabs in current selections, uses the buffer
             tabstop option or the count parameter for tabstop.
 
- * `<a-">`: rotate selections content, if specified, the count groups
+ * `<a-)>`: rotate selections content, if specified, the count groups
             selections, so `3<a-">` rotate (1, 2, 3) and (3, 4, 6)
             independently.
+ * `<a-(>`: rotate selections content backwards
 
 Goto Commands
 ~~~~~~~~~~~~~
@@ -514,8 +509,8 @@ A multiselection can also be obtained with `S`, which splits the current
 selection according to the regex entered. To split a comma separated list,
 use `S` then ', *'
 
-The regex syntax supported by Kakoune is the Perl one and is described
-here <<Regex syntax>>.
+The regex syntax supported by Kakoune is the based on the ECMAScript script
+syntax and is described at <<doc/pages/regex#,`:doc regex`>>.
 
 `s` and `S` share the search pattern with `/`, and hence entering an empty
 pattern uses the last one.
@@ -709,17 +704,9 @@ See <<doc/pages/execeval#,`:doc execeval`>>.
 Insert mode completion
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Kakoune can propose completions while inserting text, the `completers` option
-controls automatic completion, which kicks in when a certain idle timeout is
-reached (see `idle_timeout` option). Insert mode completion can be explicitly triggered
-using `<c-x>`, followed, by:
+Kakoune can propose completions while inserting text: filenames, words, lines…
 
- * *f* : filename completion
- * *w* : word completion (current buffer)
- * *W* : word completion (all buffers)
- * *l* : line completion (current buffer)
-
-Completion candidates can be selected using `<c-n>` and `<c-p>`.
+See <<doc/pages/keys#insert-mode-completion,`:doc keys insert-mode-completion`>>.
 
 Escape to normal mode
 ~~~~~~~~~~~~~~~~~~~~~
@@ -739,6 +726,8 @@ command. This provides a few advantages:
 This feature is tailored for scripting/macros, as it provides a more predictable
 behaviour than leaving insert mode with `<esc>`, executing normal mode command
 and entering back insert mode (with which binding ?)
+
+See <<doc/pages/modes#,`:doc modes`>>.
 
 Highlighters
 ~~~~~~~~~~~~

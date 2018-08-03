@@ -9,6 +9,7 @@
 #include "client.hh"
 #include "buffer_utils.hh"
 #include "option.hh"
+#include "option_types.hh"
 
 #include <algorithm>
 #include <sstream>
@@ -30,7 +31,10 @@ Window::Window(Buffer& buffer)
 
     setup_builtin_highlighters(m_builtin_highlighters.group());
 
-    for (auto& option : options().flatten_options())
+    // gather as on_option_changed can mutate the option managers
+    for (auto& option : options().flatten_options()
+                      | transform([](auto& ptr) { return ptr.get(); })
+                      | gather<Vector<const Option*>>())
         on_option_changed(*option);
 }
 
@@ -72,6 +76,14 @@ void Window::center_column(ColumnCount buffer_column)
     display_column_at(buffer_column, m_dimensions.column/2_col);
 }
 
+static uint32_t compute_faces_hash(const FaceRegistry& faces)
+{
+    uint32_t hash = 0;
+    for (auto&& face : faces.flatten_faces() | transform(&FaceRegistry::FaceMap::Item::value))
+        hash = combine_hash(hash, face.alias.empty() ? hash_value(face.face) : hash_value(face.alias));
+    return hash;
+}
+
 Window::Setup Window::build_setup(const Context& context) const
 {
     Vector<BufferRange, MemoryDomain::Display> selections;
@@ -80,6 +92,7 @@ Window::Setup Window::build_setup(const Context& context) const
 
     return { m_position, m_dimensions,
              context.buffer().timestamp(),
+             compute_faces_hash(context.faces()),
              context.selections().main_index(),
              std::move(selections) };
 }
@@ -92,7 +105,8 @@ bool Window::needs_redraw(const Context& context) const
         m_dimensions != m_last_setup.dimensions or
         context.buffer().timestamp() != m_last_setup.timestamp or
         selections.main_index() != m_last_setup.main_selection or
-        selections.size() != m_last_setup.selections.size())
+        selections.size() != m_last_setup.selections.size() or
+        compute_faces_hash(context.faces()) != m_last_setup.faces_hash)
         return true;
 
     for (int i = 0; i < selections.size(); ++i)
@@ -112,7 +126,19 @@ const DisplayBuffer& Window::update_display_buffer(const Context& context)
 
     auto start_time = profile ? Clock::now() : Clock::time_point{};
 
+    if (m_display_buffer.timestamp() != -1)
+    {
+        for (auto&& change : buffer().changes_since(m_display_buffer.timestamp()))
+        {
+            if (change.type == Buffer::Change::Insert and change.begin.line < m_position.line)
+                m_position.line += change.end.line - change.begin.line;
+            if (change.type == Buffer::Change::Erase and change.begin.line < m_position.line)
+                m_position.line = std::max(m_position.line - (change.end.line - change.begin.line), change.begin.line);
+        }
+    }
+
     DisplayBuffer::LineList& lines = m_display_buffer.lines();
+    m_display_buffer.set_timestamp(buffer().timestamp());
     lines.clear();
 
     if (m_dimensions == DisplayCoord{0,0})
@@ -121,19 +147,16 @@ const DisplayBuffer& Window::update_display_buffer(const Context& context)
     kak_assert(&buffer() == &context.buffer());
     const DisplaySetup setup = compute_display_setup(context);
 
-    m_position = setup.window_pos;
-    m_range = setup.window_range;
-
     const int tabstop = context.options()["tabstop"].get<int>();
-    for (LineCount line = 0; line < m_range.line; ++line)
+    for (LineCount line = 0; line < setup.window_range.line; ++line)
     {
-        LineCount buffer_line = m_position.line + line;
+        LineCount buffer_line = setup.window_pos.line + line;
         if (buffer_line >= buffer().line_count())
             break;
-        auto beg_byte = get_byte_to_column(buffer(), tabstop, {buffer_line, m_position.column});
+        auto beg_byte = get_byte_to_column(buffer(), tabstop, {buffer_line, setup.window_pos.column});
         auto end_byte = setup.full_lines ?
             buffer()[buffer_line].length()
-          : get_byte_to_column(buffer(), tabstop, {buffer_line, m_position.column + m_range.column});
+          : get_byte_to_column(buffer(), tabstop, {buffer_line, setup.window_pos.column + setup.window_range.column});
 
         // The display buffer always has at least one buffer atom, which might be empty if
         // beg_byte == end_byte
@@ -143,11 +166,12 @@ const DisplayBuffer& Window::update_display_buffer(const Context& context)
     m_display_buffer.compute_range();
     BufferRange range{{0,0}, buffer().end_coord()};
     for (auto pass : { HighlightPass::Wrap, HighlightPass::Move, HighlightPass::Colorize })
-        m_builtin_highlighters.highlight({context, pass, {}}, m_display_buffer, range);
+        m_builtin_highlighters.highlight({context, setup, pass, {}}, m_display_buffer, range);
 
     m_display_buffer.optimize();
 
     m_last_setup = build_setup(context);
+    set_position(setup.window_pos);
 
     if (profile and not (buffer().flags() & Buffer::Flags::Debug))
     {
@@ -162,7 +186,7 @@ const DisplayBuffer& Window::update_display_buffer(const Context& context)
 
 void Window::set_position(DisplayCoord position)
 {
-    m_position.line = std::max(0_line, position.line);
+    m_position.line = clamp(position.line, 0_line, buffer().line_count()-1);
     m_position.column = std::max(0_col, position.column);
 }
 
@@ -176,8 +200,18 @@ void Window::set_dimensions(DisplayCoord dimensions)
     }
 }
 
-DisplaySetup Window::compute_display_setup(const Context& context)
+static void check_display_setup(const DisplaySetup& setup, const Window& window)
 {
+    kak_assert(setup.window_pos.line >= 0 and setup.window_pos.line < window.buffer().line_count());
+    kak_assert(setup.window_pos.column >= 0);
+    kak_assert(setup.window_range.column >= 0);
+    kak_assert(setup.window_range.line >= 0);
+}
+
+DisplaySetup Window::compute_display_setup(const Context& context) const
+{
+    auto win_pos = m_position;
+
     DisplayCoord offset = options()["scrolloff"].get<DisplayCoord>();
     offset.line = std::min(offset.line, (m_dimensions.line + 1) / 2);
     offset.column = std::min(offset.column, (m_dimensions.column + 1) / 2);
@@ -186,21 +220,22 @@ DisplaySetup Window::compute_display_setup(const Context& context)
     const auto& cursor = context.selections().main().cursor();
 
     // Ensure cursor line is visible
-    if (cursor.line - offset.line < m_position.line)
-        m_position.line = std::max(0_line, cursor.line - offset.line);
-    if (cursor.line + offset.line >= m_position.line + m_dimensions.line)
-        m_position.line = std::min(buffer().line_count()-1, cursor.line + offset.line - m_dimensions.line + 1);
+    if (cursor.line - offset.line < win_pos.line)
+        win_pos.line = std::max(0_line, cursor.line - offset.line);
+    if (cursor.line + offset.line >= win_pos.line + m_dimensions.line)
+        win_pos.line = std::min(buffer().line_count()-1, cursor.line + offset.line - m_dimensions.line + 1);
 
     DisplaySetup setup{
-        m_position,
+        win_pos,
         m_dimensions,
-        {cursor.line - m_position.line,
-         get_column(buffer(), tabstop, cursor) - m_position.column},
+        {cursor.line - win_pos.line,
+         get_column(buffer(), tabstop, cursor) - win_pos.column},
         offset,
         false
     };
     for (auto pass : { HighlightPass::Move, HighlightPass::Wrap })
-        m_builtin_highlighters.compute_display_setup({context, pass, {}}, setup);
+        m_builtin_highlighters.compute_display_setup({context, setup, pass, {}}, setup);
+    check_display_setup(setup, *this);
 
     // now ensure the cursor column is visible
     {
@@ -217,6 +252,7 @@ DisplaySetup Window::compute_display_setup(const Context& context)
             setup.window_pos.column += overflow;
             setup.cursor_pos.column -= overflow;
         }
+        check_display_setup(setup, *this);
     }
 
     return setup;
@@ -268,6 +304,9 @@ BufferCoord find_buffer_coord(const DisplayLine& line, const Buffer& buffer,
 
 Optional<DisplayCoord> Window::display_position(BufferCoord coord) const
 {
+    if (m_display_buffer.timestamp() != buffer().timestamp())
+        return {};
+
     LineCount l = 0;
     for (auto& line : m_display_buffer.lines())
     {
@@ -281,8 +320,9 @@ Optional<DisplayCoord> Window::display_position(BufferCoord coord) const
 
 BufferCoord Window::buffer_coord(DisplayCoord coord) const
 {
-    if (m_display_buffer.lines().empty())
-        return {0,0};
+    if (m_display_buffer.timestamp() != buffer().timestamp() or
+        m_display_buffer.lines().empty())
+        return {0, 0};
     if (coord <= 0_line)
         coord = {0,0};
     if ((size_t)coord.line >= m_display_buffer.lines().size())
@@ -313,7 +353,7 @@ void Window::run_hook_in_own_context(StringView hook_name, StringView param,
         return;
 
     InputHandler hook_handler{{ *m_buffer, Selection{} },
-                              Context::Flags::Transient,
+                              Context::Flags::Draft,
                               std::move(client_name)};
     hook_handler.context().set_window(*this);
     if (m_client)

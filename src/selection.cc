@@ -16,16 +16,23 @@ SelectionList::SelectionList(Buffer& buffer, Selection s, size_t timestamp)
 SelectionList::SelectionList(Buffer& buffer, Selection s)
     : SelectionList(buffer, std::move(s), buffer.timestamp()) {}
 
-SelectionList::SelectionList(Buffer& buffer, Vector<Selection> s, size_t timestamp)
-    : m_buffer(&buffer), m_selections(std::move(s)), m_timestamp(timestamp)
+SelectionList::SelectionList(Buffer& buffer, Vector<Selection> list, size_t timestamp)
+    : m_buffer(&buffer), m_selections(std::move(list)), m_timestamp(timestamp)
 {
     kak_assert(size() > 0);
     m_main = size() - 1;
     check_invariant();
 }
 
-SelectionList::SelectionList(Buffer& buffer, Vector<Selection> s)
-    : SelectionList(buffer, std::move(s), buffer.timestamp()) {}
+SelectionList::SelectionList(Buffer& buffer, Vector<Selection> list)
+    : SelectionList(buffer, std::move(list), buffer.timestamp()) {}
+
+SelectionList::SelectionList(SelectionList::UnsortedTag, Buffer& buffer, Vector<Selection> list, size_t timestamp, size_t main)
+    : m_buffer(&buffer), m_selections(std::move(list)), m_timestamp(timestamp)
+{
+    sort_and_merge_overlapping();
+    check_invariant();
+}
 
 void SelectionList::remove(size_t index)
 {
@@ -38,11 +45,10 @@ void SelectionList::set(Vector<Selection> list, size_t main)
     kak_assert(main < list.size());
     m_selections = std::move(list);
     m_main = main;
+    m_timestamp = m_buffer->timestamp();
     sort_and_merge_overlapping();
-    update_timestamp();
     check_invariant();
 }
-
 
 namespace
 {
@@ -206,6 +212,12 @@ static void clamp(Selection& sel, const Buffer& buffer)
     sel.cursor() = buffer.clamp(sel.cursor());
 }
 
+void clamp_selections(Vector<Selection>& selections, const Buffer& buffer)
+{
+    for (auto& sel : selections)
+        clamp(sel, buffer);
+}
+
 void update_selections(Vector<Selection>& selections, size_t& main, Buffer& buffer, size_t timestamp)
 {
     if (timestamp == buffer.timestamp())
@@ -280,30 +292,41 @@ void SelectionList::check_invariant() const
 #endif
 }
 
-void SelectionList::sort()
+void sort_selections(Vector<Selection>& selections, size_t& main_index)
 {
-    if (size() == 1)
+    if (selections.size() == 1)
         return;
 
-    const auto& main = this->main();
+    const auto& main = selections[main_index];
     const auto main_begin = main.min();
-    m_main = std::count_if(begin(), end(), [&](const Selection& sel) {
-                               auto begin = sel.min();
-                               if (begin == main_begin)
-                                   return &sel < &main;
-                               else
-                                   return begin < main_begin;
-                           });
-    std::stable_sort(begin(), end(), compare_selections);
+    main_index = std::count_if(selections.begin(), selections.end(),
+                               [&](const Selection& sel) {
+        auto begin = sel.min();
+        if (begin == main_begin)
+            return &sel < &main;
+        else
+            return begin < main_begin;
+    });
+    std::stable_sort(selections.begin(), selections.end(), compare_selections);
+}
+
+void merge_overlapping_selections(Vector<Selection>& selections, size_t& main_index)
+{
+    if (selections.size() == 1)
+        return;
+
+    selections.erase(Kakoune::merge_overlapping(selections.begin(), selections.end(),
+                                                main_index, overlaps), selections.end());
+}
+
+void SelectionList::sort()
+{
+    sort_selections(m_selections, m_main);
 }
 
 void SelectionList::merge_overlapping()
 {
-    if (size() == 1)
-        return;
-
-    m_selections.erase(Kakoune::merge_overlapping(begin(), end(),
-                                                  m_main, overlaps), end());
+    merge_overlapping_selections(m_selections, m_main);
 }
 
 void SelectionList::merge_consecutive()
@@ -324,24 +347,6 @@ void SelectionList::sort_and_merge_overlapping()
     merge_overlapping();
 }
 
-static inline void _avoid_eol(const Buffer& buffer, BufferCoord& coord)
-{
-    auto column = coord.column;
-    auto line = buffer[coord.line];
-    if (column != 0 and column == line.length() - 1)
-        coord.column = line.byte_count_to(line.char_length() - 2);
-}
-
-void SelectionList::avoid_eol()
-{
-    update();
-    for (auto& sel : m_selections)
-    {
-        _avoid_eol(buffer(), sel.anchor());
-        _avoid_eol(buffer(), sel.cursor());
-    }
-}
-
 BufferCoord get_insert_pos(const Buffer& buffer, const Selection& sel,
                            InsertMode mode)
 {
@@ -352,11 +357,7 @@ BufferCoord get_insert_pos(const Buffer& buffer, const Selection& sel,
     case InsertMode::InsertCursor:
         return sel.cursor();
     case InsertMode::Append:
-    {
-        // special case for end of lines, append to current line instead
-        auto pos = sel.max();
-        return buffer.byte_at(pos) == '\n' ? pos : buffer.char_next(pos);
-    }
+        return buffer.char_next(sel.max());
     case InsertMode::InsertAtLineBegin:
         return sel.min().line;
     case InsertMode::AppendAtLineEnd:
@@ -420,9 +421,9 @@ void SelectionList::insert(ConstArrayView<String> strings, InsertMode mode,
         if (mode == InsertMode::Replace)
         {
             auto changes = m_buffer->changes_since(old_timestamp);
-            if (changes.size() < 2) // Nothing got inserted, either str was empty, or just \n at end of buffer
+            if (changes.size() == 1) // Nothing got inserted, either str was empty, or just \n at end of buffer
                 sel.anchor() = sel.cursor() = m_buffer->clamp(pos);
-            else
+            else if (changes.size() == 2)
             {
                 // we want min and max from *before* we do any change
                 auto& min = sel.min();
@@ -430,6 +431,8 @@ void SelectionList::insert(ConstArrayView<String> strings, InsertMode mode,
                 min = changes.back().begin;
                 max = m_buffer->char_prev(changes.back().end);
             }
+            else
+                kak_assert(changes.empty());
         }
         else if (not str.empty())
         {
@@ -480,7 +483,11 @@ String selection_to_string(const Selection& selection)
 
 String selection_list_to_string(const SelectionList& selections)
 {
-    return join(selections | transform(selection_to_string), ':', false);
+    auto beg = &*selections.begin(), end = &*selections.end();
+    auto main = beg + selections.main_index();
+    using View = ConstArrayView<Selection>;
+    return join(concatenated(View{main, end}, View{beg, main}) |
+                transform(selection_to_string), ' ', false);
 }
 
 Selection selection_from_string(StringView desc)
@@ -505,23 +512,14 @@ Selection selection_from_string(StringView desc)
     return Selection{anchor, cursor};
 }
 
-SelectionList selection_list_from_string(Buffer& buffer, StringView desc)
+SelectionList selection_list_from_string(Buffer& buffer, ConstArrayView<String> descs)
 {
-    if (desc.empty())
+    if (descs.empty())
         throw runtime_error{"empty selection description"};
 
-    Vector<Selection> sels;
-    for (auto sel_desc : desc | split<StringView>(':'))
-    {
-        auto sel = selection_from_string(sel_desc);
-        clamp(sel, buffer);
-        sels.push_back(sel);
-    }
-    size_t main = 0;
-    std::sort(sels.begin(), sels.end(), compare_selections);
-    sels.erase(merge_overlapping(sels.begin(), sels.end(), main, overlaps), sels.end());
-
-    return {buffer, std::move(sels)};
+    auto sels = descs | transform([&](auto&& d) { auto s = selection_from_string(d); clamp(s, buffer); return s; })
+                      | gather<Vector<Selection>>();
+    return {SelectionList::UnsortedTag{}, buffer, std::move(sels), buffer.timestamp(), 0};
 }
 
 }

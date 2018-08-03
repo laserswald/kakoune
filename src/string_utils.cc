@@ -125,6 +125,13 @@ InplaceString<15> to_string(int val)
     return res;
 }
 
+InplaceString<15> to_string(unsigned val)
+{
+    InplaceString<15> res;
+    res.m_length = sprintf(res.m_data, "%u", val);
+    return res;
+}
+
 InplaceString<23> to_string(long int val)
 {
     InplaceString<23> res;
@@ -139,10 +146,10 @@ InplaceString<23> to_string(long long int val)
     return res;
 }
 
-InplaceString<23> to_string(size_t val)
+InplaceString<23> to_string(unsigned long val)
 {
     InplaceString<23> res;
-    res.m_length = sprintf(res.m_data, "%zu", val);
+    res.m_length = sprintf(res.m_data, "%lu", val);
     return res;
 }
 
@@ -287,13 +294,13 @@ void format_impl(StringView fmt, ArrayView<const StringView> params, AppendFunc 
             append(StringView{it, opening});
             auto closing = std::find(opening, end, '}');
             if (closing == end)
-                throw runtime_error("Format string error, unclosed '{'");
+                throw runtime_error("format string error, unclosed '{'");
 
             const int index = (closing == opening + 1) ?
                 implicitIndex : str_to_int({opening+1, closing});
 
             if (index >= params.size())
-                throw runtime_error("Format string parameter index too big");
+                throw runtime_error("format string parameter index too big");
 
             append(params[index]);
             implicitIndex = index+1;
@@ -329,6 +336,23 @@ String format(StringView fmt, ArrayView<const StringView> params)
     res.reserve(size);
 
     format_impl(fmt, params, [&](StringView s) { res += s; });
+    return res;
+}
+
+String double_up(StringView s, StringView characters)
+{
+    String res;
+    auto pos = s.begin();
+    for (auto it = s.begin(), end = s.end(); it != end; ++it)
+    {
+        if (contains(characters, *it))
+        {
+            res += StringView{pos, it+1};
+            res += *it;
+            pos = it+1;
+        }
+    }
+    res += StringView{pos, s.end()};
     return res;
 }
 
@@ -374,6 +398,8 @@ UnitTest test_string{[]()
     kak_assert(str_to_int(to_string(INT_MIN)) == INT_MIN);
     kak_assert(str_to_int("00") == 0);
     kak_assert(str_to_int("-0") == 0);
+
+    kak_assert(double_up(R"('foo%"bar"')", "'\"%") == R"(''foo%%""bar""'')");
 
     kak_assert(replace("tchou/tcha/tchi", "/", "!!") == "tchou!!tcha!!tchi");
 }};

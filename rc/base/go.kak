@@ -11,21 +11,17 @@ hook global BufCreate .*\.go %{
 # Highlighters
 # ‾‾‾‾‾‾‾‾‾‾‾‾
 
-add-highlighter shared/ regions -default code go \
-    back_string '`' '`' '' \
-    double_string '"' (?<!\\)(\\\\)*" '' \
-    single_string "'" (?<!\\)(\\\\)*' '' \
-    comment /\* \*/ '' \
-    comment '//' $ ''
+add-highlighter shared/go regions
+add-highlighter shared/go/code default-region group
+add-highlighter shared/go/back_string region '`' '`' fill string
+add-highlighter shared/go/double_string region '"' (?<!\\)(\\\\)*" fill string
+add-highlighter shared/go/single_string region "'" (?<!\\)(\\\\)*' fill string
+add-highlighter shared/go/comment region /\* \*/ fill comment
+add-highlighter shared/go/comment_line region '//' $ fill comment
 
-add-highlighter shared/go/back_string fill string
-add-highlighter shared/go/double_string fill string
-add-highlighter shared/go/single_string fill string
-add-highlighter shared/go/comment fill comment
+add-highlighter shared/go/code/ regex %{-?([0-9]*\.(?!0[xX]))?\b([0-9]+|0[xX][0-9a-fA-F]+)\.?([eE][+-]?[0-9]+)?i?\b} 0:value
 
-add-highlighter shared/go/code regex %{-?([0-9]*\.(?!0[xX]))?\b([0-9]+|0[xX][0-9a-fA-F]+)\.?([eE][+-]?[0-9]+)?i?\b} 0:value
-
-%sh{
+evaluate-commands %sh{
     # Grammar
     keywords="break|default|func|interface|select|case|defer|go|map|struct"
     keywords="${keywords}|chan|else|goto|package|switch|const|fallthrough|if|range|type"
@@ -37,16 +33,16 @@ add-highlighter shared/go/code regex %{-?([0-9]*\.(?!0[xX]))?\b([0-9]+|0[xX][0-9
 
     # Add the language's grammar to the static completion list
     printf %s\\n "hook global WinSetOption filetype=go %{
-        set-option window static_words '${keywords}:${attributes}:${types}:${values}:${functions}'
-    }" | sed 's,|,:,g'
+        set-option window static_words ${keywords} ${attributes} ${types} ${values} ${functions}
+    }" | tr '|' ' '
 
     # Highlight keywords
     printf %s "
-        add-highlighter shared/go/code regex \b(${keywords})\b 0:keyword
-        add-highlighter shared/go/code regex \b(${attributes})\b 0:attribute
-        add-highlighter shared/go/code regex \b(${types})\b 0:type
-        add-highlighter shared/go/code regex \b(${values})\b 0:value
-        add-highlighter shared/go/code regex \b(${functions})\b 0:builtin
+        add-highlighter shared/go/code/ regex \b(${keywords})\b 0:keyword
+        add-highlighter shared/go/code/ regex \b(${attributes})\b 0:attribute
+        add-highlighter shared/go/code/ regex \b(${types})\b 0:type
+        add-highlighter shared/go/code/ regex \b(${values})\b 0:value
+        add-highlighter shared/go/code/ regex \b(${functions})\b 0:builtin
     "
 }
 
@@ -64,7 +60,7 @@ define-command -hidden go-indent-on-new-line %~
         # align to opening paren of previous line
         try %{ execute-keys -draft [( <a-k> \A\([^\n]+\n[^\n]*\n?\z <ret> s \A\(\h*.|.\z <ret> '<a-;>' & }
         # copy // comments prefix
-        try %{ execute-keys -draft \;<c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o><c-o>P<esc> }
+        try %{ execute-keys -draft \;<c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o>P<esc> }
         # indent after a switch's case/default statements
         try %[ execute-keys -draft k<a-x> <a-k> ^\h*(case|default).*:$ <ret> j<a-gt> ]
         # indent after if|else|while|for
@@ -85,11 +81,11 @@ define-command -hidden go-indent-on-closing-curly-brace %[
 # Initialization
 # ‾‾‾‾‾‾‾‾‾‾‾‾‾‾
 
-hook -group go-highlight global WinSetOption filetype=go %{ add-highlighter window ref go }
+hook -group go-highlight global WinSetOption filetype=go %{ add-highlighter window/go ref go }
 
 hook global WinSetOption filetype=go %{
     # cleanup trailing whitespaces when exiting insert mode
-    hook window InsertEnd .* -group go-hooks %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
+    hook window ModeChange insert:.* -group go-hooks %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
     hook window InsertChar \n -group go-indent go-indent-on-new-line
     hook window InsertChar \{ -group go-indent go-indent-on-opening-curly-brace
     hook window InsertChar \} -group go-indent go-indent-on-closing-curly-brace

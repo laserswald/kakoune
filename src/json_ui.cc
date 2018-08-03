@@ -20,18 +20,18 @@ namespace Kakoune
 template<typename T>
 String to_json(ArrayView<const T> array)
 {
-    String res;
-    for (auto& elem : array)
-    {
-        if (not res.empty())
-            res += ", ";
-        res += to_json(elem);
-    }
-    return "[" + res + "]";
+    return "[" + join(array | transform([](auto&& elem) { return to_json(elem); }), ", ") + "]";
 }
 
 template<typename T, MemoryDomain D>
 String to_json(const Vector<T, D>& vec) { return to_json(ArrayView<const T>{vec}); }
+
+template<typename K, typename V, MemoryDomain D>
+String to_json(const HashMap<K, V, D>& map)
+{
+    return "{" + join(map | transform([](auto&& i) { return format("{}: {}", to_json(i.key), to_json(i.value)); }),
+                      ',', false) + "}";
+}
 
 String to_json(int i) { return to_string(i); }
 String to_json(bool b) { return b ? "true" : "false"; }
@@ -75,7 +75,7 @@ String to_json(Color color)
 String to_json(Attribute attributes)
 {
     struct Attr { Attribute attr; StringView name; }
-    attrs[] { 
+    attrs[] {
         { Attribute::Exclusive, "exclusive" },
         { Attribute::Underline, "underline" },
         { Attribute::Reverse, "reverse" },
@@ -117,6 +117,7 @@ String to_json(MenuStyle style)
     switch (style)
     {
         case MenuStyle::Prompt: return R"("prompt")";
+        case MenuStyle::Search: return R"("search")";
         case MenuStyle::Inline: return R"("inline")";
     }
     return "";
@@ -232,7 +233,7 @@ void JsonUI::refresh(bool force)
 
 void JsonUI::set_ui_options(const Options& options)
 {
-    // rpc_call("set_ui_options", options);
+    rpc_call("set_ui_options", options);
 }
 
 DisplayCoord JsonUI::dimensions()
@@ -296,7 +297,9 @@ parse_json(const char* pos, const char* end)
     if (*pos == '[')
     {
         JsonArray array;
-        if (*++pos == ']')
+        if (++pos == end)
+            throw runtime_error("unable to parse array");
+        if (*pos == ']')
             return Result{std::move(array), pos+1};
 
         while (true)
@@ -319,8 +322,10 @@ parse_json(const char* pos, const char* end)
     }
     if (*pos == '{')
     {
+        if (++pos == end)
+            throw runtime_error("unable to parse object");
         JsonObject object;
-        if (*++pos == '}')
+        if (*pos == '}')
             return Result{std::move(object), pos+1};
 
         while (true)
@@ -352,7 +357,7 @@ parse_json(const char* pos, const char* end)
                 throw runtime_error("unable to parse object, expected ',' or '}'");
         }
     }
-    throw runtime_error("Could not parse json");
+    throw runtime_error("unable to parse json");
 }
 
 std::tuple<Value, const char*>
@@ -386,6 +391,32 @@ void JsonUI::eval_json(const Value& json)
                 m_on_key(key);
         }
     }
+    else if (method == "mouse")
+    {
+        if (params.size() != 3)
+            throw runtime_error("mouse type/coordinates not specified");
+
+        const StringView type = params[0].as<String>();
+        const Codepoint coord = encode_coord({params[1].as<int>(), params[2].as<int>()});
+        if (type == "move")
+            m_on_key({Key::Modifiers::MousePos, coord});
+        else if (type == "press")
+            m_on_key({Key::Modifiers::MousePress, coord});
+        else if (type == "release")
+            m_on_key({Key::Modifiers::MouseRelease, coord});
+        else if (type == "wheel_up")
+            m_on_key({Key::Modifiers::MouseWheelUp, coord});
+        else if (type == "wheel_down")
+            m_on_key({Key::Modifiers::MouseWheelDown, coord});
+        else
+            throw runtime_error(format("invalid mouse event type: {}", type));
+    }
+    else if (method == "menu_select")
+    {
+        if (params.size() != 1)
+            throw runtime_error("menu_select needs the item index");
+        m_on_key({Key::Modifiers::MenuSelect, (Codepoint)params[0].as<int>()});
+    }
     else if (method == "resize")
     {
         if (params.size() != 2)
@@ -407,7 +438,10 @@ void JsonUI::parse_requests(EventMode mode)
     {
         ssize_t size = ::read(0, buf, bufsize);
         if (size == -1 or size == 0)
+        {
+            m_stdin_watcher.close_fd();
             break;
+        }
 
         m_requests += StringView{buf, buf + size};
     }
@@ -427,7 +461,7 @@ void JsonUI::parse_requests(EventMode mode)
         }
         catch (runtime_error& error)
         {
-            write(2, format("error while handling requests '{}': '{}'",
+            write(2, format("error while handling requests '{}': '{}'\n",
                             m_requests, error.what()));
             // try to salvage request by dropping its first line
             pos = std::min(m_requests.end(), find(m_requests, '\n')+1);

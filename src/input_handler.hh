@@ -35,6 +35,7 @@ enum class PromptFlags
     None = 0,
     Password = 1 << 0,
     DropHistoryEntriesWithBlankPrefix = 1 << 1,
+    Search = 1 << 2,
 };
 constexpr bool with_bit_ops(Meta::Type<PromptFlags>) { return true; }
 
@@ -148,6 +149,22 @@ constexpr auto enum_desc(Meta::Type<AutoInfo>)
         { AutoInfo::Command, "command"},
         { AutoInfo::OnKey, "onkey"},
         { AutoInfo::Normal, "normal" }
+    });
+}
+
+enum class AutoComplete
+{
+    None = 0,
+    Insert = 0b01,
+    Prompt = 0b10
+};
+constexpr bool with_bit_ops(Meta::Type<AutoComplete>) { return true; }
+
+constexpr auto enum_desc(Meta::Type<AutoComplete>)
+{
+    return make_array<EnumDesc<AutoComplete>, 3>({
+        { AutoComplete::Insert, "insert"},
+        { AutoComplete::Prompt, "prompt" }
     });
 }
 

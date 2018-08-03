@@ -37,7 +37,7 @@ public:
     DisplayAtom(const Buffer& buffer, BufferCoord begin, BufferCoord end)
         : m_type(Range), m_buffer(&buffer), m_range{begin, end} {}
 
-    DisplayAtom(String str, Face face = Face{})
+    DisplayAtom(String str, Face face)
         : m_type(Text), m_text(std::move(str)), face(face) {}
 
     StringView content() const;
@@ -104,7 +104,7 @@ public:
 
     DisplayLine() = default;
     DisplayLine(AtomList atoms);
-    DisplayLine(String str, Face face = Face{})
+    DisplayLine(String str, Face face)
     { push_back({ std::move(str), face }); }
 
     iterator begin() { return m_atoms.begin(); }
@@ -142,8 +142,10 @@ private:
     AtomList  m_atoms;
 };
 
+class FaceRegistry;
+
 String fix_atom_text(StringView str);
-DisplayLine parse_display_line(StringView line, const HashMap<String, DisplayLine>& builtins = {});
+DisplayLine parse_display_line(StringView line, const FaceRegistry& faces, const HashMap<String, DisplayLine>& builtins = {});
 
 class DisplayBuffer : public UseMemoryDomain<MemoryDomain::Display>
 {
@@ -161,9 +163,13 @@ public:
     // Optimize all lines, set DisplayLine::optimize
     void optimize();
 
+    void set_timestamp(size_t timestamp) { m_timestamp = timestamp; }
+    size_t timestamp() const { return m_timestamp; }
+
 private:
     LineList m_lines;
     BufferRange m_range;
+    size_t m_timestamp = -1;
 };
 
 }
